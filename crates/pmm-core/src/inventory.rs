@@ -171,7 +171,9 @@ pub fn search<'a>(inventories: &'a [Inventory], query: &str) -> Vec<Hit<'a>> {
     hits
 }
 
-pub(crate) fn rank(package: &Package, query: &str) -> Option<Rank> {
+/// How well `package` matches `query` (lowercase), if at all: the rules
+/// behind [`search`], for callers filtering their own lists.
+pub fn rank(package: &Package, query: &str) -> Option<Rank> {
     let name = package.name.to_lowercase();
     // For "io.github.tchx84.Flatseal" only the app part counts, or every
     // io.github.* app would match "git". For "@expo/cli", "cli" can match

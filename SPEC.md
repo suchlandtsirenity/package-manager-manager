@@ -186,7 +186,11 @@ Same features as the CLI, laid out for browsing:
 5. `add` / `remove` / `restore` (with `--dry-run`), dependency warnings. ✅
 6. Per-package management: remote results in `search`, `info`, `install`,
    `uninstall`, `upgrade`. ✅
-7. `pmm-gui`: Installed view first, then Browse, Updates, managers.
+7. `pmm-gui`: Installed view first (done: sidebar with counts and a Duplicates
+   page, search with the CLI's ranking, sortable columns, background loading),
+   then package page, Browse, Updates, Activity, managers.
+   Build with `cargo build -p pmm-gui` (needs Rust 1.93+; libcosmic pinned to a
+   commit); plain `cargo build` skips it.
 8. Publish: README, CI, GitHub releases, crates.io for core + CLI.
 
 ## Later

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/pmm-core", "crates/pmm"]
+members = ["crates/pmm-core", "crates/pmm", "crates/pmm-gui"]
+# Plain `cargo build` / `cargo test` skip the GUI: libcosmic is a large build.
+# Build it with `cargo build -p pmm-gui`.
+default-members = ["crates/pmm-core", "crates/pmm"]
 
 [workspace.package]
 version = "0.1.0"

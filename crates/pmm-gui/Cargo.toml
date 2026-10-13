@@ -1,0 +1,19 @@
+[package]
+name = "pmm-gui"
+description = "COSMIC desktop app for pmm, the package manager manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# libcosmic needs a newer compiler than the CLI.
+rust-version = "1.93"
+# libcosmic is a git dependency, which crates.io doesn't allow: released on
+# GitHub instead.
+publish = false
+
+[dependencies]
+pmm-core = { path = "../pmm-core" }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+# Pinned: libcosmic's API isn't stable yet.
+rev = "a6ac45c7cd3645df3b4e25c4e0636e66e9d662fa"
