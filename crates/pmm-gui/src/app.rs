@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::futures::channel::oneshot;
+use cosmic::iced::widget::text::Wrapping;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{self, nav_bar};
@@ -165,14 +166,20 @@ impl App {
                 );
             }
             // Each cell is inset like the header buttons' labels, so they line up.
+            // Text that doesn't fit is cut off at the cell's edge rather than
+            // wrapping or spilling into the next column.
             let cell = |content: Element<'a, Message>, portion: u16| {
-                widget::container(content).padding([0, spacing.space_s]).width(Length::FillPortion(portion))
+                widget::container(content)
+                    .padding([0, spacing.space_s])
+                    .width(Length::FillPortion(portion))
+                    .clip(true)
             };
+            let one_line = |text: String| widget::text::body(text).wrapping(Wrapping::None).into();
             list = list.push(
                 widget::Row::new()
-                    .push(cell(widget::text::body(row.package.name.as_str()).into(), 4))
-                    .push(cell(widget::text::body(clip(row.package.version.as_deref().unwrap_or(""), 22)).into(), 2))
-                    .push(cell(widget::text::body(row.manager.as_str()).into(), 1))
+                    .push(cell(one_line(row.package.name.clone()), 4))
+                    .push(cell(one_line(clip(row.package.version.as_deref().unwrap_or(""), 30)), 2))
+                    .push(cell(one_line(row.manager.clone()), 1))
                     .push(cell(notes.into(), 3))
                     .spacing(spacing.space_s),
             );
