@@ -6,3 +6,10 @@ homepage = "https://pip.pypa.io"
 binary = "pip"
 version = ["pip", "--version"]
 owns = ["~/.local/lib/python*/site-packages"]
+
+[list]
+# User installs, plus anything forced into /usr/local with --break-system-packages.
+# Packages apt put in /usr/lib/python3 belong to apt and are left out.
+command = ["sh", "-c", "pip list --user --format=freeze 2>/dev/null; for d in /usr/local/lib/python3*/dist-packages; do [ -d \"$d\" ] && pip list --path \"$d\" --format=freeze 2>/dev/null; done; true"]
+pattern = '^(?P<name>[^=\s]+)==(?P<version>\S+)$'
+watch = ["~/.local/lib/python*/site-packages", "/usr/local/lib/python*/dist-packages"]

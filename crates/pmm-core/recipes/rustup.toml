@@ -6,3 +6,9 @@ homepage = "https://rustup.rs"
 binary = "rustup"
 version = ["rustup", "--version"]
 owns = ["~/.cargo/bin", "~/.rustup"]
+
+[list]
+command = ["rustup", "toolchain", "list"]
+pattern = '^(?P<name>\S+)(?: \((?P<note>[^)]*)\))?'
+items = "toolchains"
+watch = ["~/.rustup/toolchains"]

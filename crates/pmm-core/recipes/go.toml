@@ -6,3 +6,7 @@ homepage = "https://go.dev"
 binary = "go"
 version = ["go", "version"]
 owns = ["~/go/bin"]
+
+[list]
+builtin = "go-bins"
+watch = ["~/go/bin"]

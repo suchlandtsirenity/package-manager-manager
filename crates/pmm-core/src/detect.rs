@@ -1,16 +1,14 @@
 //! Working out which package managers are on this machine, which version,
 //! and which other manager (if any) installed each one.
 
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
-use wait_timeout::ChildExt;
 
+use crate::paths::{Env, owned_depth};
+use crate::process;
 use crate::recipe::Recipe;
 
 /// How long a `--version` command gets before pmm gives up on it.
@@ -49,28 +47,9 @@ impl Detection {
     }
 }
 
-/// Everything the detector needs from the environment, so tests can fake it.
-#[derive(Debug, Clone)]
-pub struct Env {
-    pub path_dirs: Vec<PathBuf>,
-    pub home: Option<PathBuf>,
-}
-
-impl Env {
-    pub fn current() -> Self {
-        let path_dirs = std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).collect())
-            .unwrap_or_default();
-        Env {
-            path_dirs,
-            home: crate::recipe::home_dir(),
-        }
-    }
-}
-
-/// Detect every recipe. Version commands run in parallel, since some
-/// (`brew --version`) take a second or more each.
-pub fn detect_all(recipes: &[Recipe], env: &Env) -> Vec<Detection> {
+/// Detect every recipe. With `versions`, also run each manager's version
+/// command (in parallel, since some take a second or more).
+pub fn detect_all(recipes: &[Recipe], env: &Env, versions: bool) -> Vec<Detection> {
     let found: Vec<Option<(PathBuf, PathBuf)>> = recipes.iter().map(|r| locate(r, env)).collect();
 
     let versions: Vec<Option<String>> = std::thread::scope(|s| {
@@ -79,7 +58,7 @@ pub fn detect_all(recipes: &[Recipe], env: &Env) -> Vec<Detection> {
             .zip(&found)
             .map(|(recipe, found)| {
                 s.spawn(move || match (found, &recipe.detect.version) {
-                    (Some(_), Some(cmd)) => read_version(cmd),
+                    (Some(_), Some(cmd)) if versions => read_version(cmd),
                     _ => None,
                 })
             })
@@ -92,7 +71,7 @@ pub fn detect_all(recipes: &[Recipe], env: &Env) -> Vec<Detection> {
         .zip(&found)
         .filter(|(_, found)| found.is_some())
         .map(|(r, _)| {
-            let patterns = r.detect.owns.iter().filter_map(|o| expand_home(o, env)).collect();
+            let patterns = r.detect.owns.iter().filter_map(|o| env.expand(o)).collect();
             (r.name.clone(), patterns)
         })
         .collect();
@@ -120,66 +99,15 @@ pub fn detect_all(recipes: &[Recipe], env: &Env) -> Vec<Detection> {
 /// Where the manager lives, as (location, resolved), or None if absent.
 fn locate(recipe: &Recipe, env: &Env) -> Option<(PathBuf, PathBuf)> {
     let location = match (&recipe.detect.binary, &recipe.detect.path) {
-        (Some(bin), _) => find_in_path(bin, &env.path_dirs)?,
+        (Some(bin), _) => env.find_in_path(bin)?,
         (None, Some(path)) => {
-            let p = expand_home(path, env)?;
+            let p = env.expand(path)?;
             p.exists().then_some(p)?
         }
         (None, None) => return None,
     };
     let resolved = location.canonicalize().unwrap_or_else(|_| location.clone());
     Some((location, resolved))
-}
-
-/// First executable called `name` in `dirs`, like `which`.
-pub fn find_in_path(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    dirs.iter().map(|d| d.join(name)).find(|p| {
-        p.metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
-}
-
-/// Expand a leading `~/`. Returns None if it needs a home dir we don't have.
-pub fn expand_home(path: &str, env: &Env) -> Option<PathBuf> {
-    match path.strip_prefix("~/") {
-        Some(rest) => Some(env.home.as_ref()?.join(rest)),
-        None if path == "~" => env.home.clone(),
-        None => Some(PathBuf::from(path)),
-    }
-}
-
-/// If `pattern` is a folder containing `path` (or is `path`), how many path
-/// components it matched; None otherwise. `*` in a pattern component matches
-/// any run of characters within that component, so
-/// `~/.nvm/versions/node/*/lib` matches every Node version.
-pub fn owned_depth(pattern: &Path, path: &Path) -> Option<usize> {
-    let pattern: Vec<Component> = pattern.components().collect();
-    let mut path = path.components();
-    for want in &pattern {
-        let got = path.next()?;
-        if !wildcard_match(&want.as_os_str().to_string_lossy(), &got.as_os_str().to_string_lossy()) {
-            return None;
-        }
-    }
-    Some(pattern.len())
-}
-
-fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let Some((first, rest)) = pattern.split_once('*') else {
-        return pattern == text;
-    };
-    let Some(mut remaining) = text.strip_prefix(first) else {
-        return false;
-    };
-    let mut pieces: Vec<&str> = rest.split('*').collect();
-    let last = pieces.pop().unwrap_or("");
-    for piece in pieces {
-        match remaining.find(piece) {
-            Some(i) => remaining = &remaining[i + piece.len()..],
-            None => return false,
-        }
-    }
-    remaining.len() >= last.len() && remaining.ends_with(last)
 }
 
 /// Which other manager installed `manager`, judging by where its real file
@@ -214,25 +142,8 @@ static VERSION_RE: LazyLock<Regex> =
 
 /// Run a version command and pull the first `x.y[.z]` out of its output.
 fn read_version(cmd: &[String]) -> Option<String> {
-    let (program, args) = cmd.split_first()?;
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    if child.wait_timeout(VERSION_TIMEOUT).ok()?.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    }
-    let mut output = String::new();
-    child.stdout.take()?.read_to_string(&mut output).ok()?;
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut output);
-    }
-    first_version(&output)
+    let output = process::run(cmd, VERSION_TIMEOUT).ok()?;
+    first_version(&output.stdout).or_else(|| first_version(&output.stderr))
 }
 
 pub fn first_version(text: &str) -> Option<String> {
@@ -291,26 +202,6 @@ mod tests {
     }
 
     #[test]
-    fn owned_depth_matches_whole_components() {
-        assert_eq!(owned_depth(Path::new("/usr"), Path::new("/usr/bin/pip")), Some(2));
-        assert_eq!(owned_depth(Path::new("/usr"), Path::new("/usrlocal/pip")), None);
-        assert_eq!(owned_depth(Path::new("/a/b/c"), Path::new("/a/b")), None);
-        assert_eq!(
-            owned_depth(Path::new("/h/.local/lib/python*/site-packages"), Path::new("/h/.local/lib/python3.12/site-packages/x")),
-            Some(6)
-        );
-    }
-
-    #[test]
-    fn wildcards() {
-        assert!(wildcard_match("python*", "python3.12"));
-        assert!(wildcard_match("*", "anything"));
-        assert!(wildcard_match("a*b*c", "a-x-b-y-c"));
-        assert!(!wildcard_match("a*c", "abd"));
-        assert!(!wildcard_match("ab*ba", "aba"));
-    }
-
-    #[test]
     fn versions_from_real_outputs() {
         let cases = [
             ("apt 2.8.3 (amd64)", "2.8.3"),
@@ -323,28 +214,5 @@ mod tests {
             assert_eq!(first_version(output).as_deref(), Some(want), "{output}");
         }
         assert_eq!(first_version("no version here"), None);
-    }
-
-    #[test]
-    fn expands_home() {
-        let env = Env { path_dirs: vec![], home: Some("/home/u".into()) };
-        assert_eq!(expand_home("~/.nvm", &env), Some("/home/u/.nvm".into()));
-        assert_eq!(expand_home("/usr", &env), Some("/usr".into()));
-        let no_home = Env { path_dirs: vec![], home: None };
-        assert_eq!(expand_home("~/.nvm", &no_home), None);
-    }
-
-    #[test]
-    fn finds_executables_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("tool");
-        let plain = dir.path().join("notes");
-        std::fs::write(&exe, "").unwrap();
-        std::fs::write(&plain, "").unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let dirs = vec![dir.path().to_path_buf()];
-        assert_eq!(find_in_path("tool", &dirs), Some(exe));
-        assert_eq!(find_in_path("notes", &dirs), None);
-        assert_eq!(find_in_path("missing", &dirs), None);
     }
 }

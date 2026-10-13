@@ -129,8 +129,13 @@ Same features as the CLI, laid out for browsing:
 - **Active in PATH** is decided by binary name, not package name (`ripgrep` → `rg`).
 - **Last updated** comes from whatever the manager leaves behind (apt history log,
   file times); "unknown" when there's nothing.
-- **Cache**: inventory cached in `~/.cache/pmm/` with a TTL; `--refresh` forces a
-  live query. Any `add`/`remove`/`update` invalidates the relevant entries.
+- **Cache**: each manager's list is cached in `~/.cache/pmm/list/`. A recipe's
+  `watch` paths (e.g. `/var/lib/dpkg/status`) are fingerprinted by modification
+  time; the cache is reused until one changes, for at most 24h (10 min for
+  recipes without `watch`). `--refresh` forces a live query.
+- **Search** matches names, and `title` (a display name like a flatpak's
+  "Firefox"), never `note` (context like "node v22.12.0"). For reverse-DNS ids
+  only the last part counts, so `io.github.*` apps don't all match "git".
 - pmm never runs `sudo` silently; commands needing it are shown first.
 
 ## Build order

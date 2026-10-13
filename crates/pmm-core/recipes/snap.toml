@@ -6,3 +6,9 @@ homepage = "https://snapcraft.io"
 binary = "snap"
 version = ["snap", "--version"]
 owns = ["/snap"]
+
+[list]
+command = ["snap", "list"]
+# Name, Version, Rev (a number, which skips the header line)
+pattern = '^(?P<name>\S+)\s+(?P<version>\S+)\s+\d+\s'
+watch = ["/var/lib/snapd/state.json"]

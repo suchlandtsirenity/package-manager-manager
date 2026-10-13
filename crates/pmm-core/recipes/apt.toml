@@ -7,3 +7,9 @@ protected = true
 binary = "apt"
 version = ["apt", "--version"]
 owns = ["/usr", "/bin", "/sbin", "/lib"]
+
+[list]
+command = ["dpkg-query", "-W", "-f", "${db:Status-Abbrev}\t${Package}\t${Version}\n"]
+# "ii" = installed, "hi" = installed and held; "rc" (removed, config left) is skipped.
+pattern = '^[ih]i\s*\t(?P<name>[^\t]+)\t(?P<version>.*)$'
+watch = ["/var/lib/dpkg/status"]

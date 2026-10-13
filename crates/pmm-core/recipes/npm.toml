@@ -6,3 +6,8 @@ homepage = "https://www.npmjs.com"
 binary = "npm"
 version = ["npm", "--version"]
 owns = ["~/.nvm/versions/node/*/lib/node_modules", "/usr/lib/node_modules", "/usr/local/lib/node_modules"]
+
+[list]
+# Reads global node_modules for every Node version under nvm, not just the active one.
+builtin = "npm-globals"
+watch = ["~/.nvm/versions/node", "~/.nvm/versions/node/*/lib/node_modules", "/usr/lib/node_modules", "/usr/local/lib/node_modules"]

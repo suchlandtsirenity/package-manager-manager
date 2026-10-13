@@ -6,3 +6,8 @@ homepage = "https://github.com/nvm-sh/nvm"
 path = "~/.nvm/nvm.sh"
 version = ["bash", "-c", "source ~/.nvm/nvm.sh && nvm --version"]
 owns = ["~/.nvm"]
+
+[list]
+builtin = "nvm"
+items = "Node versions"
+watch = ["~/.nvm/versions/node"]

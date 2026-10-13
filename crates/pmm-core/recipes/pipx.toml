@@ -6,3 +6,8 @@ homepage = "https://pipx.pypa.io"
 binary = "pipx"
 version = ["pipx", "--version"]
 owns = ["~/.local/share/pipx"]
+
+[list]
+command = ["pipx", "list", "--short"]
+pattern = '^(?P<name>\S+) (?P<version>\S+)'
+watch = ["~/.local/share/pipx/venvs", "~/.local/share/pipx/venvs/*/pipx_metadata.json"]

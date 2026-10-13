@@ -8,7 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +22,9 @@ pub struct Recipe {
     #[serde(default)]
     pub protected: bool,
     pub detect: Detect,
+    /// How to list installed packages. Missing means pmm can't list them.
+    #[serde(default)]
+    pub list: Option<List>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -44,6 +48,29 @@ pub struct Detect {
     /// one path component.
     #[serde(default)]
     pub owns: Vec<String>,
+}
+
+/// How to list what a manager has installed: either a command whose output
+/// is matched line by line against `pattern`, or a reader built into pmm.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct List {
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    /// Regex applied to each output line. Named groups: `name` (required),
+    /// `version`, `title` (searchable display name) and `note` (optional). Lines that don't match are skipped.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Name of a reader built into pmm, for managers a pattern can't handle.
+    #[serde(default)]
+    pub builtin: Option<String>,
+    /// What the list holds, e.g. "toolchains". Defaults to "packages".
+    #[serde(default)]
+    pub items: Option<String>,
+    /// Files or folders that change when packages are installed or removed.
+    /// The cached list is reused until one of them changes. `~` and `*` work.
+    #[serde(default)]
+    pub watch: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -76,7 +103,34 @@ pub fn parse(text: &str) -> Result<Recipe> {
     if recipe.detect.binary.is_none() && recipe.detect.path.is_none() {
         bail!("[detect] needs `binary` or `path`");
     }
+    if let Some(list) = &recipe.list {
+        check_list(list)?;
+    }
     Ok(recipe)
+}
+
+fn check_list(list: &List) -> Result<()> {
+    match (&list.builtin, &list.command, &list.pattern) {
+        (Some(name), None, None) => {
+            if !crate::inventory::BUILTINS.contains(&name.as_str()) {
+                bail!(
+                    "[list] builtin {name:?} doesn't exist (known: {})",
+                    crate::inventory::BUILTINS.join(", ")
+                );
+            }
+        }
+        (None, Some(command), Some(pattern)) => {
+            if command.is_empty() {
+                bail!("[list] command is empty");
+            }
+            let re = Regex::new(pattern).context("[list] pattern isn't a valid regex")?;
+            if !re.capture_names().flatten().any(|n| n == "name") {
+                bail!("[list] pattern needs a (?P<name>...) group");
+            }
+        }
+        _ => bail!("[list] needs either `builtin`, or `command` and `pattern`"),
+    }
+    Ok(())
 }
 
 pub fn built_in() -> Vec<Recipe> {
@@ -184,6 +238,19 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let text = "name = \"x\"\ndescription = \"x\"\nbinry = \"x\"\n[detect]\nbinary = \"x\"\n";
         assert!(parse(text).is_err());
+    }
+
+    #[test]
+    fn list_section_is_checked() {
+        let base = "name = \"x\"\ndescription = \"x\"\n[detect]\nbinary = \"x\"\n[list]\n";
+        let ok = format!("{base}command = [\"x\"]\npattern = '^(?P<name>\\S+)'\n");
+        assert!(parse(&ok).is_ok());
+        let no_name = format!("{base}command = [\"x\"]\npattern = '^(\\S+)'\n");
+        assert!(parse(&no_name).unwrap_err().to_string().contains("name"));
+        let bad_builtin = format!("{base}builtin = \"nope\"\n");
+        assert!(parse(&bad_builtin).unwrap_err().to_string().contains("doesn't exist"));
+        let both = format!("{base}builtin = \"nvm\"\ncommand = [\"x\"]\n");
+        assert!(parse(&both).is_err());
     }
 
     #[test]

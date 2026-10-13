@@ -6,3 +6,9 @@ homepage = "https://docs.astral.sh/uv"
 binary = "uv"
 version = ["uv", "--version"]
 owns = ["~/.local/share/uv"]
+
+[list]
+command = ["uv", "tool", "list"]
+# "ruff v0.5.0"; the indented "- ruff" lines under it are its commands.
+pattern = '^(?P<name>[^\s-]\S*) v(?P<version>\S+)'
+watch = ["~/.local/share/uv/tools", "~/.local/share/uv/tools/*/uv-receipt.toml"]

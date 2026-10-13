@@ -6,3 +6,8 @@ homepage = "https://flatpak.org"
 binary = "flatpak"
 version = ["flatpak", "--version"]
 owns = ["/var/lib/flatpak", "~/.local/share/flatpak"]
+
+[list]
+command = ["flatpak", "list", "--app", "--columns=application,version,name"]
+pattern = '^(?P<name>[^\t]+)\t(?P<version>[^\t]*)\t(?P<title>.*)$'
+watch = ["/var/lib/flatpak/app", "/var/lib/flatpak/app/*", "~/.local/share/flatpak/app", "~/.local/share/flatpak/app/*"]

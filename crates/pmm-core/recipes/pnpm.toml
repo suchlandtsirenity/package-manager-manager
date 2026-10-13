@@ -6,3 +6,7 @@ homepage = "https://pnpm.io"
 binary = "pnpm"
 version = ["pnpm", "--version"]
 owns = ["~/.local/share/pnpm"]
+
+[list]
+builtin = "pnpm-globals"
+watch = ["~/.local/share/pnpm/global/*/package.json"]

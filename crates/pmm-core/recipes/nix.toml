@@ -6,3 +6,7 @@ homepage = "https://nixos.org"
 binary = "nix"
 version = ["nix", "--version"]
 owns = ["/nix", "~/.nix-profile"]
+
+[list]
+builtin = "nix"
+watch = ["~/.nix-profile", "~/.local/state/nix/profiles"]

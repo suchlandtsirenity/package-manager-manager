@@ -6,3 +6,8 @@ homepage = "https://brew.sh"
 binary = "brew"
 version = ["brew", "--version"]
 owns = ["/home/linuxbrew/.linuxbrew", "~/.linuxbrew"]
+
+[list]
+command = ["brew", "list", "--versions"]
+pattern = '^(?P<name>\S+) (?P<version>\S+)'
+watch = ["/home/linuxbrew/.linuxbrew/Cellar", "/home/linuxbrew/.linuxbrew/Cellar/*", "/home/linuxbrew/.linuxbrew/Caskroom"]
