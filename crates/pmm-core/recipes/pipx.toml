@@ -36,3 +36,40 @@ commands = [["pipx", "uninstall-all"]]
 
 [install_pkg]
 command = ["pipx", "install", "{package}"]
+
+[search_remote]
+# PyPI has no search API: this looks up the exact name only.
+command = ["python3", "-c", '''
+import json, sys, urllib.request, urllib.error
+try:
+    info = json.load(urllib.request.urlopen("https://pypi.org/pypi/" + sys.argv[1] + "/json", timeout=20))["info"]
+except urllib.error.HTTPError as e:
+    if e.code == 404:
+        sys.exit(0)
+    raise
+print(info["name"], info["version"], (info.get("summary") or "").replace("\t", " "), sep="\t")
+''', "{query}"]
+pattern = '^(?P<name>[^\t]+)\t(?P<version>[^\t]*)\t(?P<description>.*)$'
+exact = true
+
+[info]
+command = ["python3", "-c", '''
+import json, sys, urllib.request, urllib.error
+try:
+    info = json.load(urllib.request.urlopen("https://pypi.org/pypi/" + sys.argv[1] + "/json", timeout=20))["info"]
+except urllib.error.HTTPError as e:
+    sys.exit("not on PyPI" if e.code == 404 else str(e))
+print(info["name"], info["version"])
+print(info.get("summary") or "")
+urls = info.get("project_urls") or {}
+home = info.get("home_page") or urls.get("Homepage") or urls.get("Source") or ""
+for label, value in [("homepage", home), ("license", info.get("license_expression") or ""), ("requires python", info.get("requires_python") or "")]:
+    if value and len(value) < 200:
+        print(f"{label}: {value}")
+''', "{package}"]
+
+[remove_pkg]
+command = ["pipx", "uninstall", "{package}"]
+
+[upgrade_pkg]
+command = ["pipx", "upgrade", "{package}"]

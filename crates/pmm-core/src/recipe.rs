@@ -38,9 +38,19 @@ pub struct Recipe {
     /// What to do, besides uninstalling the manager, when it's removed.
     #[serde(default)]
     pub remove: Option<Remove>,
-    /// How to install one package. Used by `pmm restore`.
+    /// How to install one package (`pmm install`, `pmm restore`).
     #[serde(default)]
     pub install_pkg: Option<PackageAction>,
+    #[serde(default)]
+    pub remove_pkg: Option<PackageAction>,
+    #[serde(default)]
+    pub upgrade_pkg: Option<PackageAction>,
+    /// How to search the manager's repository for packages.
+    #[serde(default)]
+    pub search_remote: Option<SearchRemote>,
+    /// How to show details about one package.
+    #[serde(default)]
+    pub info: Option<Info>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -174,6 +184,27 @@ pub struct PackageAction {
     pub sudo: bool,
 }
 
+/// Searching a manager's repository. `{query}` in `command` is replaced by
+/// what's searched for; each output line is matched against `pattern`, with
+/// groups `name` (required), `version`, `title` and `description`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SearchRemote {
+    pub command: Vec<String>,
+    pub pattern: String,
+    /// The repository can only look up exact names (PyPI has no search).
+    #[serde(default)]
+    pub exact: bool,
+}
+
+/// Details about one package: `command`'s output (stdout) is shown as is.
+/// `{package}` is replaced by the name.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Info {
+    pub command: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Source {
     #[default]
@@ -223,11 +254,24 @@ pub fn parse(text: &str) -> Result<Recipe> {
             check_home_path(path)?;
         }
     }
-    if let Some(action) = &recipe.install_pkg {
-        check_commands("[install_pkg]", std::slice::from_ref(&action.command))?;
-        if !action.command.iter().any(|a| a.contains("{package}") || a.contains("{version}")) {
-            bail!("[install_pkg] command needs {{package}} or {{version}}");
+    for (section, action) in [
+        ("[install_pkg]", &recipe.install_pkg),
+        ("[remove_pkg]", &recipe.remove_pkg),
+        ("[upgrade_pkg]", &recipe.upgrade_pkg),
+    ] {
+        if let Some(action) = action {
+            check_placeholder(section, &action.command, &["{package}", "{version}"])?;
         }
+    }
+    if let Some(search) = &recipe.search_remote {
+        check_placeholder("[search_remote]", &search.command, &["{query}"])?;
+        let re = Regex::new(&search.pattern).context("[search_remote] pattern isn't a valid regex")?;
+        if !re.capture_names().flatten().any(|n| n == "name") {
+            bail!("[search_remote] pattern needs a (?P<name>...) group");
+        }
+    }
+    if let Some(info) = &recipe.info {
+        check_placeholder("[info]", &info.command, &["{package}"])?;
     }
     Ok(recipe)
 }
@@ -241,6 +285,15 @@ fn check_commands(section: &str, commands: &[Vec<String>]) -> Result<()> {
             }
             Some(_) => {}
         }
+    }
+    Ok(())
+}
+
+/// A command acting on something must say where its name goes.
+fn check_placeholder(section: &str, command: &[String], placeholders: &[&str]) -> Result<()> {
+    check_commands(section, std::slice::from_ref(&command.to_vec()))?;
+    if !command.iter().any(|a| placeholders.iter().any(|p| a.contains(p))) {
+        bail!("{section} command needs {}", placeholders.join(" or "));
     }
     Ok(())
 }
@@ -474,6 +527,12 @@ mod tests {
         }
         let no_placeholder = format!("{base}[install_pkg]\ncommand = [\"x\", \"add\"]\n");
         assert!(parse(&no_placeholder).is_err());
+        let search = format!("{base}[search_remote]\ncommand = [\"x\", \"find\", \"{{query}}\"]\npattern = '^(?P<name>\\S+)'\n");
+        assert!(parse(&search).is_ok());
+        let search_no_name = format!("{base}[search_remote]\ncommand = [\"x\", \"{{query}}\"]\npattern = '^(\\S+)'\n");
+        assert!(parse(&search_no_name).is_err());
+        let info_no_placeholder = format!("{base}[info]\ncommand = [\"x\", \"info\"]\n");
+        assert!(parse(&info_no_placeholder).is_err());
     }
 
     #[test]

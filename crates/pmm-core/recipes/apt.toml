@@ -28,3 +28,20 @@ sudo = true
 [install_pkg]
 command = ["apt-get", "install", "-y", "{package}"]
 sudo = true
+
+[search_remote]
+command = ["apt-cache", "search", "--names-only", "{query}"]
+pattern = '^(?P<name>\S+) - (?P<description>.*)$'
+
+[info]
+# The fields people care about, and the description (its indented lines).
+command = ["sh", "-c", "apt-cache show --no-all-versions \"$1\" | grep -E '^(Package|Version|Section|Homepage|Installed-Size|Description(-en)?):|^ '", "sh", "{package}"]
+
+[remove_pkg]
+# No -y: apt shows what else would be removed and asks.
+command = ["apt-get", "remove", "{package}"]
+sudo = true
+
+[upgrade_pkg]
+command = ["apt-get", "install", "--only-upgrade", "-y", "{package}"]
+sudo = true

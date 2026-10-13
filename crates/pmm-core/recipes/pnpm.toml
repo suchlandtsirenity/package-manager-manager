@@ -39,3 +39,10 @@ note = "Delete the PNPM_HOME lines from ~/.bashrc, if the installer added them."
 
 [install_pkg]
 command = ["pnpm", "add", "-g", "{package}"]
+
+# No [search_remote]: pnpm uses npm's registry, which npm searches.
+[remove_pkg]
+command = ["pnpm", "remove", "-g", "{package}"]
+
+[upgrade_pkg]
+command = ["pnpm", "update", "-g", "{package}"]

@@ -55,10 +55,12 @@ impl Step {
 }
 
 /// Letters, digits and `@/._+:-`: enough for npm scopes, flatpak ids,
-/// toolchains and versions, nothing a shell would interpret.
+/// toolchains and versions, nothing a shell would interpret, and no `..`
+/// (some commands build a path from the name).
 pub fn is_package_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
+        && !name.contains("..")
         && name.chars().all(|c| c.is_ascii_alphanumeric() || "@/._+:-".contains(c))
 }
 
@@ -147,7 +149,7 @@ mod tests {
         let action = recipe::PackageAction { command: cmd(&["npm", "install", "-g", "{package}"]), sudo: false };
         let step = Step::for_package(&action, "@scope/tool", None).unwrap();
         assert_eq!(step.command, cmd(&["npm", "install", "-g", "@scope/tool"]));
-        for bad in ["", "-rf", "a b", "x;rm", "$(boom)", "a'b"] {
+        for bad in ["", "-rf", "a b", "x;rm", "$(boom)", "a'b", "../../.bashrc"] {
             assert!(Step::for_package(&action, bad, None).is_none(), "{bad:?}");
         }
         let nvm = recipe::PackageAction { command: cmd(&["sh", "-c", "nvm install {version}"]), sudo: false };

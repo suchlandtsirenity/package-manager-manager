@@ -41,3 +41,17 @@ commands = [["sh", "-c", "cargo install --list | sed -n 's/^\\([^ ]*\\) v.*:$/\\
 
 [install_pkg]
 command = ["cargo", "install", "{package}"]
+
+[search_remote]
+command = ["cargo", "search", "{query}", "--limit", "25"]
+pattern = '^(?P<name>\S+) = "(?P<version>[^"]+)"\s*(?:# (?P<description>.*))?$'
+
+[info]
+command = ["cargo", "info", "{package}"]
+
+[remove_pkg]
+command = ["cargo", "uninstall", "{package}"]
+
+[upgrade_pkg]
+# Reinstalls only if a newer version exists.
+command = ["cargo", "install", "{package}"]

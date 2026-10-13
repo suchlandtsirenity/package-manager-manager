@@ -38,3 +38,25 @@ note = "Packages for other Python versions and in /usr/local stay; `pmm list -m 
 
 # No [install_pkg]: Ubuntu blocks `pip install` outside a venv (PEP 668).
 # Restore pip packages with `pmm restore <list> --via pipx` (or uv).
+
+# No [search_remote]: pip can't install here (PEP 668); pipx and uv search PyPI.
+[info]
+command = ["python3", "-c", '''
+import json, sys, urllib.request, urllib.error
+try:
+    info = json.load(urllib.request.urlopen("https://pypi.org/pypi/" + sys.argv[1] + "/json", timeout=20))["info"]
+except urllib.error.HTTPError as e:
+    sys.exit("not on PyPI" if e.code == 404 else str(e))
+print(info["name"], info["version"])
+print(info.get("summary") or "")
+urls = info.get("project_urls") or {}
+home = info.get("home_page") or urls.get("Homepage") or urls.get("Source") or ""
+for label, value in [("homepage", home), ("license", info.get("license_expression") or ""), ("requires python", info.get("requires_python") or "")]:
+    if value and len(value) < 200:
+        print(f"{label}: {value}")
+''', "{package}"]
+
+[remove_pkg]
+# Only the current Python's packages: pip can't uninstall for a Python that's
+# gone (leftovers from an OS upgrade), and would just say "skipping".
+command = ["sh", "-c", "if python3 -m pip show -q \"$1\" 2>/dev/null; then python3 -m pip uninstall -y --break-system-packages \"$1\"; else echo \"$1 isn't installed for $(python3 --version), so this pip can't remove it (it belongs to another Python version)\" >&2; exit 1; fi", "sh", "{package}"]

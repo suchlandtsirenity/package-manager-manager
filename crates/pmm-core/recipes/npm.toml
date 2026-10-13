@@ -39,3 +39,17 @@ sudo = true
 
 [install_pkg]
 command = ["npm", "install", "-g", "{package}"]
+
+[search_remote]
+# name, description, [author,] date, version, keywords
+command = ["npm", "search", "--parseable", "{query}"]
+pattern = '^(?P<name>[^\t]+)\t(?P<description>[^\t]*)\t.*\t(?P<version>[^\t]+)\t[^\t]*$'
+
+[info]
+command = ["npm", "view", "{package}"]
+
+[remove_pkg]
+command = ["npm", "uninstall", "-g", "{package}"]
+
+[upgrade_pkg]
+command = ["npm", "install", "-g", "{package}@latest"]

@@ -49,9 +49,9 @@ A recipe declares:
 | `remove` | `commands` to remove its packages (when uninstalling the manager doesn't), `paths` to delete afterwards (inside `~` only), `note` for cleanup left to the user |
 | `protected` | if true, pmm refuses to remove it (apt, dpkg) |
 | `binaries` | the commands a package provides (`glob`, `command` + `pattern`, or `builtin`), for showing which copy of a duplicate runs |
-| `search_remote` | search the manager's repository/registry for packages not installed |
-| `info` | details for one package (description, version, homepage) |
-| `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions (`command` with `{package}` and/or `{version}`, `sudo`); `install_pkg` exists from step 5, for `restore` |
+| `search_remote` | `command` with `{query}` + `pattern` (groups `name`, `version`, `title`, `description`); `exact = true` when the repository only looks up exact names |
+| `info` | `command` with `{package}`; its stdout is shown as is |
+| `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions (`command` with `{package}` and/or `{version}`, `sudo`). Names are checked (letters, digits, `@/._+:-`, no `..`) before being filled in |
 
 Any field can be missing; pmm then just doesn't offer that action for that manager.
 Known gap: PyPI has no search API, so pip/uv/pipx support exact-name lookup only.
@@ -95,7 +95,10 @@ built-in parser written in Rust.
   everything. By default: installed matches first (instant, from cache), then
   repository results streamed in per manager as each one answers, marking what's
   already installed. `--installed` stops after the local part; `--remote` skips it.
-  Until per-package management lands (build step 6), only the installed part exists.
+  Repository results show the best 8 per manager (`--all`, or `-m`, for every
+  one), exact names in bold, "installed" where that manager already has it.
+  Managers with no results are listed on one line. pip has no remote search
+  (it can't install here); pipx and uv look names up on PyPI.
 - `pmm dupes [--all]` — two lists:
   - the same package under more than one manager (names compared
     case-insensitively, `-`/`_`/`.` equal, app part of flatpak ids), with which
@@ -125,12 +128,19 @@ built-in parser written in Rust.
 
 ### Managing packages
 - Searching repositories is `pmm search` (see Inventory); there is no separate command.
-- `pmm info <package> [--manager <name>]` — details from each manager that has it.
-- `pmm install <package> --manager <name>` — always explicit about which manager;
-  if `--manager` is left out, show the options and ask.
-- `pmm uninstall <package> [--manager <name>]` — asks which copy if it's installed
-  in more than one place.
-- `pmm upgrade <package> [--manager <name>]`.
+- `pmm info <package> [--manager <name>]` — where it's installed, then details
+  from each manager that knows it (asked in parallel; first 15 lines each unless
+  `-m`). Managers giving the same answer (pip, pipx and uv all ask PyPI) share
+  one block.
+- `pmm install <package> [--manager <name>]` — always explicit about which manager;
+  if `--manager` is left out, every repository is searched for that exact name
+  (by the duplicate rules, so `firefox` finds `org.mozilla.firefox`), the options
+  are listed with versions, and pmm asks which. Without a terminal, `-m` is required.
+- `pmm uninstall <package> [--manager <name>] [--yes]` — asks which copy if it's
+  installed in more than one place, then confirms. Warns when the package is how
+  a manager was installed (`uninstall pipx` from apt), pointing at `pmm remove`.
+- `pmm upgrade <package> [--manager <name>]` — asks which copy, like uninstall.
+- All three run attached to the terminal and ask for sudo up front when needed.
 
 ## GUI (`pmm-gui`)
 
@@ -175,7 +185,7 @@ Same features as the CLI, laid out for browsing:
 4. `update` (with `--dry-run`). ✅
 5. `add` / `remove` / `restore` (with `--dry-run`), dependency warnings. ✅
 6. Per-package management: remote results in `search`, `info`, `install`,
-   `uninstall`, `upgrade`.
+   `uninstall`, `upgrade`. ✅
 7. `pmm-gui`: Installed view first, then Browse, Updates, managers.
 8. Publish: README, CI, GitHub releases, crates.io for core + CLI.
 

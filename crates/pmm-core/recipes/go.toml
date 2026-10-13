@@ -37,3 +37,10 @@ uninstall = [["apt-get", "remove", "golang-go"]]
 # ~/go/src (your own code, if any) is left alone.
 commands = [["go", "clean", "-modcache"]]
 paths = ["~/go/bin"]
+
+[remove_pkg]
+command = ["sh", "-c", "rm -v \"$HOME/go/bin/{package}\""]
+
+[upgrade_pkg]
+# Reinstall from the package path recorded in the binary.
+command = ["sh", "-c", "p=$(go version -m \"$HOME/go/bin/{package}\" | awk '$1 == \"path\" { print $2; exit }') && [ -n \"$p\" ] && go install \"$p@latest\""]

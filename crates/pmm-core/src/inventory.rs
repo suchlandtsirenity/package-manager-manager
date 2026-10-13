@@ -142,6 +142,8 @@ pub enum Rank {
     Contains,
     /// Matched the title (e.g. a flatpak's display name) but not the name.
     Title,
+    /// Matched only by the repository's own search (usually the description).
+    Description,
 }
 
 #[derive(Debug)]
@@ -169,7 +171,7 @@ pub fn search<'a>(inventories: &'a [Inventory], query: &str) -> Vec<Hit<'a>> {
     hits
 }
 
-fn rank(package: &Package, query: &str) -> Option<Rank> {
+pub(crate) fn rank(package: &Package, query: &str) -> Option<Rank> {
     let name = package.name.to_lowercase();
     // For "io.github.tchx84.Flatseal" only the app part counts, or every
     // io.github.* app would match "git". For "@expo/cli", "cli" can match

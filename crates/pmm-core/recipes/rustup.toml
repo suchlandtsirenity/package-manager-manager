@@ -27,3 +27,9 @@ uninstall = [["rustup", "self", "uninstall", "-y"]]
 
 [install_pkg]
 command = ["rustup", "toolchain", "install", "{package}"]
+
+[remove_pkg]
+command = ["rustup", "toolchain", "uninstall", "{package}"]
+
+[upgrade_pkg]
+command = ["rustup", "update", "{package}"]

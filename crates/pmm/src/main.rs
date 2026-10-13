@@ -12,7 +12,8 @@ use pmm_core::{
 use pmm_core::action::{self, Event, Io, Step};
 use pmm_core::manage::{self, Restore};
 use pmm_core::update::Plan;
-use pmm_core::{Recipe, manifest};
+use pmm_core::dupes::dupe_key;
+use pmm_core::{Recipe, manifest, remote};
 
 /// pmm — the package manager manager.
 #[derive(Parser)]
@@ -35,15 +36,54 @@ enum Cmd {
         #[arg(long)]
         refresh: bool,
     },
-    /// Find installed packages by name, across every manager.
+    /// Find packages by name: what's installed first, then what each
+    /// manager's repository has.
     Search {
         query: String,
-        /// Only search this manager.
+        /// Only search this manager (and show all its results).
         #[arg(short, long)]
         manager: Option<String>,
-        /// Re-read from the managers instead of using the cache.
+        /// Only what's installed.
+        #[arg(long, conflicts_with = "remote")]
+        installed: bool,
+        /// Only the repositories.
+        #[arg(long)]
+        remote: bool,
+        /// Show every repository result, not just the best few.
+        #[arg(short, long)]
+        all: bool,
+        /// Re-read installed packages instead of using the cache.
         #[arg(long)]
         refresh: bool,
+    },
+    /// Details about a package from each manager that knows it.
+    Info {
+        package: String,
+        /// Only ask this manager (and show everything it says).
+        #[arg(short, long)]
+        manager: Option<String>,
+    },
+    /// Install a package. Without --manager, shows which managers have it
+    /// and asks.
+    Install {
+        package: String,
+        #[arg(short, long)]
+        manager: Option<String>,
+    },
+    /// Uninstall a package. Asks which copy if more than one manager has it.
+    Uninstall {
+        package: String,
+        #[arg(short, long)]
+        manager: Option<String>,
+        /// Don't ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Upgrade one package. Asks which copy if more than one manager has it.
+    Upgrade {
+        package: String,
+        #[arg(short, long)]
+        manager: Option<String>,
     },
     /// Find things installed more than once, and which copy actually runs.
     Dupes {
@@ -140,11 +180,36 @@ fn main() -> ExitCode {
                 }
             })
         }
-        Cmd::Search { query, manager, refresh } => {
-            select(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
+        Cmd::Search { query, manager, installed, remote, all, refresh } => {
+            select_installed(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
                 let inventories = list_all(&d, &env, &cache, refresh);
-                search_installed(&inventories, &query)
+                let mut found = false;
+                if !remote {
+                    found |= search_installed(&inventories, &query);
+                }
+                if !installed {
+                    found |= search_repositories(&d, &inventories, &query, all || manager.is_some(), !remote)?;
+                }
+                if found { Ok(()) } else { Err(Failure::NoMatches) }
             })
+        }
+        Cmd::Info { package, manager } => {
+            select_installed(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
+                let inventories = list_all(&d, &env, &cache, false);
+                info(&d, &inventories, &package, manager.is_some())
+            })
+        }
+        Cmd::Install { package, manager } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            install(&detections, &package, manager.as_deref(), &env, &cache)
+        }
+        Cmd::Uninstall { package, manager, yes } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            uninstall(&detections, &package, manager.as_deref(), yes, &env, &cache)
+        }
+        Cmd::Upgrade { package, manager } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            upgrade(&detections, &package, manager.as_deref(), &env, &cache)
         }
         Cmd::Dupes { all, refresh } => {
             let detections = detect_all(&loaded.recipes, &env, false);
@@ -334,7 +399,8 @@ fn extra(p: &pmm_core::Package) -> String {
         .join(" · ")
 }
 
-fn search_installed(inventories: &[Inventory], query: &str) -> Result<(), Failure> {
+/// Print installed matches; false if there were none.
+fn search_installed(inventories: &[Inventory], query: &str) -> bool {
     for inv in inventories {
         if let Err(e) = &inv.packages {
             eprintln!("warning: couldn't read {}: {e}", inv.manager);
@@ -342,11 +408,11 @@ fn search_installed(inventories: &[Inventory], query: &str) -> Result<(), Failur
     }
     let hits = search(inventories, query);
     if hits.is_empty() {
-        eprintln!("Nothing installed matches {query:?}.");
-        return Err(Failure::NoMatches);
+        println!("{}", format!("Nothing installed matches {query:?}.").if_supports_color(Stdout, |l| l.dimmed()));
+        return false;
     }
     let n = hits.len();
-    println!("{n} {} for {query:?}\n", if n == 1 { "match" } else { "matches" });
+    heading(&format!("Installed: {n} {} for {query:?}\n", if n == 1 { "match" } else { "matches" }));
 
     let manager_width = hits.iter().map(|h| h.manager.len()).max().unwrap_or(0);
     let name_width = hits.iter().map(|h| h.package.name.len()).max().unwrap_or(0);
@@ -384,7 +450,7 @@ fn search_installed(inventories: &[Inventory], query: &str) -> Result<(), Failur
                 .if_supports_color(Stdout, |w| w.yellow())
         );
     }
-    Ok(())
+    true
 }
 
 /// A path with the home folder shown as `~`.
@@ -1065,4 +1131,367 @@ fn restore(
     } else {
         Err(Failure::Message(format!("couldn't restore {}", failed.join(", "))))
     }
+}
+
+/// Cut `text` to `max` characters, with an ellipsis.
+fn clip(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", text[..i].trim_end()),
+        None => text.to_string(),
+    }
+}
+
+/// Repository results, printed per manager as each one answers. False if
+/// none had anything.
+fn search_repositories(
+    detections: &[Detection],
+    inventories: &[Inventory],
+    query: &str,
+    all: bool,
+    after_installed: bool,
+) -> Result<bool, Failure> {
+    const SHOWN: usize = 8;
+    let searching: Vec<&str> = remote::searchable(detections).iter().map(|d| d.recipe.name.as_str()).collect();
+    if searching.is_empty() {
+        println!("{}", "None of these managers can search a repository.".if_supports_color(Stdout, |l| l.dimmed()));
+        return Ok(false);
+    }
+    if after_installed {
+        println!();
+    }
+    heading("In repositories");
+    let line = format!("Asking {}…", searching.join(", "));
+    println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+
+    let mut empty: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut any = false;
+    remote::search_remote(detections, inventories, query, |results| {
+        let found = match results.found {
+            Ok(found) if !found.is_empty() => found,
+            Ok(_) => {
+                empty.push(if results.exact_only {
+                    format!("{} (exact names only)", results.manager)
+                } else {
+                    results.manager
+                });
+                return;
+            }
+            Err(e) => {
+                failed.push(format!("{}: {e}", results.manager));
+                return;
+            }
+        };
+        any = true;
+        let shown = if all { found.len() } else { found.len().min(SHOWN) };
+        let name_width = found[..shown].iter().map(|f| f.package.name.len()).max().unwrap_or(0);
+        let versions: Vec<String> = found[..shown]
+            .iter()
+            .map(|f| clip(f.package.version.as_deref().unwrap_or(""), 16))
+            .collect();
+        let version_width = versions.iter().map(|v| v.chars().count()).max().unwrap_or(0);
+        // Only make room for the "installed" mark where something is.
+        let mark_width = if found[..shown].iter().any(|f| f.installed) { 9 } else { 0 };
+        let took = format!("{:.1}s", results.took.as_secs_f32());
+        println!(
+            "\n{}  {}",
+            results.manager.if_supports_color(Stdout, |m| m.cyan()),
+            took.if_supports_color(Stdout, |t| t.dimmed())
+        );
+        for (f, version) in found[..shown].iter().zip(&versions) {
+            let name = format!("{:<name_width$}", f.package.name);
+            let name = if f.rank == Rank::Exact {
+                name.if_supports_color(Stdout, |n| n.bold()).to_string()
+            } else {
+                name
+            };
+            let version = format!("{version:<version_width$}");
+            let mark = if f.installed { "installed" } else { "" };
+            let about = [f.package.title.as_deref(), f.package.note.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let mark = format!("{mark:<mark_width$}");
+            let line = format!(
+                "  {name}  {version}  {}{}{}",
+                mark.if_supports_color(Stdout, |m| m.green()),
+                if mark_width > 0 { "  " } else { "" },
+                clip(&about, 70).if_supports_color(Stdout, |a| a.dimmed())
+            );
+            println!("{}", line.trim_end());
+        }
+        if shown < found.len() {
+            let more = format!("  +{} more (`pmm search {query} -m {}`)", found.len() - shown, results.manager);
+            println!("{}", more.if_supports_color(Stdout, |m| m.dimmed()));
+        }
+    })
+    .map_err(Failure::Message)?;
+
+    if !empty.is_empty() {
+        let line = format!("\nNo results: {}", empty.join(", "));
+        println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+    }
+    for f in &failed {
+        eprintln!("warning: couldn't search {f}");
+    }
+    Ok(any)
+}
+
+fn info(detections: &[Detection], inventories: &[Inventory], package: &str, one: bool) -> Result<(), Failure> {
+    const LINES: usize = 15;
+    let key = dupe_key(package);
+    let installed: Vec<String> = inventories
+        .iter()
+        .flat_map(|inv| {
+            inv.packages.iter().flatten().filter(|p| dupe_key(&p.name) == key).map(move |p| {
+                format!("{} {}", inv.manager, p.version.as_deref().unwrap_or("")).trim_end().to_string()
+            })
+        })
+        .collect();
+    heading(package);
+    match installed.as_slice() {
+        [] => println!("Not installed."),
+        list => println!("Installed: {}", list.join(" · ")),
+    }
+
+    let mut answers = remote::info_all(detections, package);
+    // Managers that have it installed first.
+    answers.sort_by_key(|(m, _)| !installed.iter().any(|i| i.split(' ').next() == Some(m)));
+    let mut missing = Vec::new();
+    let mut any = false;
+    // pip, pipx and uv all ask PyPI: one block, headed by all three.
+    let answers: Vec<(String, Result<String, String>)> = group_by(answers.into_iter().map(|(m, a)| (a, m)))
+        .into_iter()
+        .flat_map(|(answer, managers)| match answer {
+            Ok(text) => vec![(managers.join(" · "), Ok(text))],
+            Err(e) => managers.into_iter().map(|m| (m.to_string(), Err(e.clone()))).collect(),
+        })
+        .collect();
+    for (manager, answer) in &answers {
+        match answer {
+            Ok(text) => {
+                any = true;
+                section(manager);
+                let lines: Vec<&str> = text.lines().collect();
+                let shown = if one { lines.len() } else { lines.len().min(LINES) };
+                for line in &lines[..shown] {
+                    println!("{line}");
+                }
+                if shown < lines.len() {
+                    let more = format!("… {} more lines (`pmm info {package} -m {manager}`)", lines.len() - shown);
+                    println!("{}", more.if_supports_color(Stdout, |m| m.dimmed()));
+                }
+            }
+            Err(e) if one => eprintln!("{manager}: {e}"),
+            Err(_) => missing.push(manager.as_str()),
+        }
+    }
+    if !missing.is_empty() {
+        let line = format!("\nNot found by: {}", missing.join(", "));
+        println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+    }
+    if any || !installed.is_empty() { Ok(()) } else { Err(Failure::NoMatches) }
+}
+
+/// Ask for one of `n` numbered options (already printed). Without a
+/// terminal nobody can answer, so that's an error pointing at `-m`.
+fn choose(question: &str, n: usize) -> Result<usize, Failure> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(Failure::Message(format!("{question} needs an answer: run it in a terminal, or pick with --manager")));
+    }
+    let range = if n == 1 { "1".to_string() } else { format!("1-{n}") };
+    print!("\n{question} [{range}, Enter to cancel] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    match answer.trim().parse::<usize>() {
+        Ok(i) if (1..=n).contains(&i) => Ok(i - 1),
+        _ => Err(Failure::Message("cancelled; nothing was changed".into())),
+    }
+}
+
+/// Run one package command, asking for sudo first if it needs it.
+fn run_package_step(step: &Step, manager: &str) -> Result<(), Failure> {
+    if step.sudo && !get_sudo(&[manager]) {
+        return Err(Failure::Message("sudo wasn't given; nothing was changed".into()));
+    }
+    println!();
+    run_in_terminal(std::slice::from_ref(step))
+        .map(|_| ())
+        .map_err(|f| Failure::Message(format!("`{}` {}", f.step.shown(ELEVATE), f.reason)))
+}
+
+fn install(detections: &[Detection], package: &str, manager: Option<&str>, env: &Env, cache: &Cache) -> Result<(), Failure> {
+    if !action::is_package_name(package) {
+        return Err(Failure::Message(format!("{package:?} isn't a package name pmm will pass to a command")));
+    }
+    // Managers that can install, limited to the one named.
+    let able: Vec<Detection> = select_installed(detections.to_vec(), manager)?
+        .into_iter()
+        .filter(|d| d.is_installed() && d.recipe.install_pkg.is_some())
+        .collect();
+    if let (Some(m), true) = (manager, able.is_empty()) {
+        return Err(Failure::Message(format!("pmm can't install {m} packages")));
+    }
+    let inventories = list_all(&able, env, cache, false);
+
+    // Each manager with an exact match, and what its repository calls it.
+    let mut options: Vec<(String, pmm_core::remote::Found)> = Vec::new();
+    if let Some(m) = manager {
+        // Named explicitly: trust the name, the manager will say if it's wrong.
+        let installed = inventories
+            .iter()
+            .flat_map(|i| i.packages.iter().flatten())
+            .any(|p| dupe_key(&p.name) == dupe_key(package));
+        let found = pmm_core::remote::Found {
+            package: pmm_core::Package { name: package.into(), version: None, title: None, note: None },
+            rank: Rank::Exact,
+            installed,
+        };
+        options.push((m.to_string(), found));
+    } else {
+        let asking: Vec<&str> = remote::searchable(&able).iter().map(|d| d.recipe.name.as_str()).collect();
+        println!("{}", format!("Looking for {package} in {}…", asking.join(", ")).if_supports_color(Stdout, |l| l.dimmed()));
+        let mut failed = Vec::new();
+        remote::search_remote(&able, &inventories, package, |results| match results.found {
+            Ok(found) => {
+                for found in found.into_iter().filter(|f| remote::is_exact(f, package)) {
+                    options.push((results.manager.clone(), found));
+                }
+            }
+            Err(e) => failed.push(format!("{}: {e}", results.manager)),
+        })
+        .map_err(Failure::Message)?;
+        for f in &failed {
+            eprintln!("warning: couldn't search {f}");
+        }
+        if options.is_empty() {
+            return Err(Failure::Message(format!(
+                "no repository has a package called {package}; `pmm search {package}` shows similar names"
+            )));
+        }
+        options.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    let (chosen_manager, found) = if manager.is_some() {
+        &options[0]
+    } else {
+        heading(&format!("\n{package} is available from\n"));
+        let width = options.iter().map(|(m, _)| m.len()).max().unwrap_or(0);
+        let name_width = options.iter().map(|(_, f)| f.package.name.len()).max().unwrap_or(0);
+        let versions: Vec<String> =
+            options.iter().map(|(_, f)| clip(f.package.version.as_deref().unwrap_or(""), 16)).collect();
+        let version_width = versions.iter().map(|v| v.chars().count()).max().unwrap_or(0);
+        for (i, ((m, f), version)) in options.iter().zip(&versions).enumerate() {
+            let p = &f.package;
+            let about = [p.title.as_deref(), p.note.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            let about = if f.installed { format!("(installed) {about}") } else { about };
+            let line = format!(
+                "  {}) {m:<width$}  {:<name_width$}  {version:<version_width$}  {}",
+                i + 1,
+                p.name,
+                clip(&about, 60).if_supports_color(Stdout, |a| a.dimmed())
+            );
+            println!("{}", line.trim_end());
+        }
+        &options[choose("Install with which?", options.len())?]
+    };
+    if found.installed {
+        println!("{} is already installed with {chosen_manager}.", found.package.name);
+        return Ok(());
+    }
+    let d = able.iter().find(|d| d.recipe.name == *chosen_manager).expect("chosen from these");
+    let action = d.recipe.install_pkg.as_ref().expect("filtered on install_pkg");
+    let step = Step::for_package(action, &found.package.name, None)
+        .ok_or_else(|| Failure::Message(format!("{:?} isn't a name pmm will pass to a command", found.package.name)))?;
+    run_package_step(&step, chosen_manager)?;
+    println!("{}", format!("\n✓ Installed {} with {chosen_manager}", found.package.name).if_supports_color(Stdout, |l| l.green()));
+    Ok(())
+}
+
+/// The installed copies of `package` (by the duplicate rules), asking which
+/// one if there are several. `what` is the verb for the question.
+fn pick_installed(
+    detections: &[Detection],
+    package: &str,
+    manager: Option<&str>,
+    what: &str,
+    env: &Env,
+    cache: &Cache,
+) -> Result<(Detection, pmm_core::Package), Failure> {
+    let selected = select_installed(detections.to_vec(), manager)?;
+    let inventories = list_all(&selected, env, cache, false);
+    let key = dupe_key(package);
+    let copies: Vec<(&str, &pmm_core::Package)> = inventories
+        .iter()
+        .flat_map(|inv| {
+            inv.packages.iter().flatten().filter(|p| dupe_key(&p.name) == key).map(move |p| (inv.manager.as_str(), p))
+        })
+        .collect();
+    let (m, p) = match copies.as_slice() {
+        [] => {
+            let place = manager.map(|m| format!(" with {m}")).unwrap_or_default();
+            return Err(Failure::Message(format!("{package} isn't installed{place}")));
+        }
+        [one] => *one,
+        several => {
+            heading(&format!("{package} is installed more than once\n"));
+            let width = several.iter().map(|(m, _)| m.len()).max().unwrap_or(0);
+            for (i, (m, p)) in several.iter().enumerate() {
+                println!("  {}) {m:<width$}  {} {}", i + 1, p.name, p.version.as_deref().unwrap_or(""));
+            }
+            several[choose(&format!("{what} which?"), several.len())?]
+        }
+    };
+    let d = selected.iter().find(|d| d.recipe.name == m).expect("listed from these").clone();
+    Ok((d, p.clone()))
+}
+
+fn uninstall(detections: &[Detection], package: &str, manager: Option<&str>, yes: bool, env: &Env, cache: &Cache) -> Result<(), Failure> {
+    let (d, p) = pick_installed(detections, package, manager, "Uninstall", env, cache)?;
+    let m = d.recipe.name.as_str();
+    let action = d
+        .recipe
+        .remove_pkg
+        .as_ref()
+        .ok_or_else(|| Failure::Message(format!("pmm can't uninstall {m} packages")))?;
+    let step = Step::for_package(action, &p.name, p.version.as_deref())
+        .ok_or_else(|| Failure::Message(format!("{:?} isn't a name pmm will pass to a command", p.name)))?;
+
+    // Uninstalling a manager this way loses track of its packages.
+    let is_manager = detections.iter().find(|other| {
+        other.recipe.name == dupe_key(&p.name) || other.recipe.name == p.name.trim_start_matches("python3-")
+    });
+    if let Some(other) = is_manager.filter(|o| matches!(&o.status, Status::Installed { via: Via::Manager(v), .. } if v == m)) {
+        let line = format!(
+            "⚠ This is how {} was installed. `pmm remove {}` also removes its packages and saves a list of them first.",
+            other.recipe.name, other.recipe.name
+        );
+        println!("{}", line.if_supports_color(Stdout, |l| l.yellow()));
+    }
+    let label = format!("{} {}", p.name, p.version.as_deref().unwrap_or("")).trim_end().to_string();
+    println!("Uninstalling {label} ({m})\n  {}", step.shown(ELEVATE));
+    if !yes {
+        confirm(&format!("Uninstall {label}?"))?;
+    }
+    run_package_step(&step, m)?;
+    println!("{}", format!("\n✓ Uninstalled {label} ({m})").if_supports_color(Stdout, |l| l.green()));
+    Ok(())
+}
+
+fn upgrade(detections: &[Detection], package: &str, manager: Option<&str>, env: &Env, cache: &Cache) -> Result<(), Failure> {
+    let (d, p) = pick_installed(detections, package, manager, "Upgrade", env, cache)?;
+    let m = d.recipe.name.as_str();
+    let action = d
+        .recipe
+        .upgrade_pkg
+        .as_ref()
+        .ok_or_else(|| Failure::Message(format!("pmm can't upgrade {m} packages one at a time")))?;
+    let step = Step::for_package(action, &p.name, p.version.as_deref())
+        .ok_or_else(|| Failure::Message(format!("{:?} isn't a name pmm will pass to a command", p.name)))?;
+    run_package_step(&step, m)?;
+    println!("{}", format!("\n✓ Upgraded {} ({m})", p.name).if_supports_color(Stdout, |l| l.green()));
+    Ok(())
 }

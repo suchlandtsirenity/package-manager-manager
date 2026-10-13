@@ -31,4 +31,19 @@ commands = [["flatpak", "uninstall", "--all", "-y"]]
 note = "App data in ~/.var/app is kept; delete it yourself if you don't want it."
 
 [install_pkg]
-command = ["flatpak", "install", "-y", "flathub", "{package}"]
+command = ["flatpak", "install", "-y", "--system", "flathub", "{package}"]
+
+[search_remote]
+command = ["flatpak", "search", "--columns=application,version,name,description", "{query}"]
+pattern = '^(?P<name>[^\t]+)\t(?P<version>[^\t]*)\t(?P<title>[^\t]*)\t(?P<description>.*)$'
+
+[info]
+# --system: flathub is often set up both system-wide and per user, and
+# flatpak would stop to ask which.
+command = ["flatpak", "remote-info", "--system", "flathub", "{package}"]
+
+[remove_pkg]
+command = ["flatpak", "uninstall", "-y", "{package}"]
+
+[upgrade_pkg]
+command = ["flatpak", "update", "-y", "{package}"]

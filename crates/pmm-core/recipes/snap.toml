@@ -34,3 +34,19 @@ note = "Snap app data in ~/snap is kept; delete it yourself if you don't want it
 [install_pkg]
 command = ["snap", "install", "{package}"]
 sudo = true
+
+[search_remote]
+# Name, Version, Publisher, Notes, Summary; the lowercase name skips the header.
+command = ["snap", "find", "{query}"]
+pattern = '^(?P<name>[a-z0-9][a-z0-9-]*)\s+(?P<version>\S+)\s+\S+\s+\S+\s+(?P<description>.*)$'
+
+[info]
+command = ["snap", "info", "{package}"]
+
+[remove_pkg]
+command = ["snap", "remove", "{package}"]
+sudo = true
+
+[upgrade_pkg]
+command = ["snap", "refresh", "{package}"]
+sudo = true

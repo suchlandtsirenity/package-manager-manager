@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod paths;
 pub mod process;
 pub mod recipe;
+pub mod remote;
 pub mod update;
 
 pub use cache::Cache;

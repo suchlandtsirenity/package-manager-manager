@@ -28,3 +28,6 @@ note = "Delete the NVM_DIR lines the installer added to ~/.bashrc."
 
 [install_pkg]
 command = ["bash", "-c", ". \"$HOME/.nvm/nvm.sh\" && nvm install {version}"]
+
+[remove_pkg]
+command = ["bash", "-c", ". \"$HOME/.nvm/nvm.sh\" && nvm uninstall {version}"]

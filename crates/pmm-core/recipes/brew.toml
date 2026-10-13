@@ -29,3 +29,17 @@ note = "Delete the `brew shellenv` line from ~/.bashrc (or ~/.profile)."
 
 [install_pkg]
 command = ["brew", "install", "{package}"]
+
+[search_remote]
+# Formulae and casks, one name per line under "==>" headings.
+command = ["brew", "search", "{query}"]
+pattern = '^(?P<name>[A-Za-z0-9@+._/-]+)$'
+
+[info]
+command = ["brew", "info", "{package}"]
+
+[remove_pkg]
+command = ["brew", "uninstall", "{package}"]
+
+[upgrade_pkg]
+command = ["brew", "upgrade", "{package}"]
