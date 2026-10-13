@@ -38,9 +38,14 @@ pattern = '^(?P<name>\S+) - (?P<description>.*)$'
 command = ["sh", "-c", "apt-cache show --no-all-versions \"$1\" | grep -E '^(Package|Version|Section|Homepage|Installed-Size|Description(-en)?):|^ '", "sh", "{package}"]
 
 [remove_pkg]
-# No -y: apt shows what else would be removed and asks.
+# No -y: in a terminal, apt shows what else would be removed and asks.
 command = ["apt-get", "remove", "{package}"]
 sudo = true
+# Without a terminal (the GUI), pmm lists what the dry run would remove in
+# its own confirmation, then runs the command with -y.
+preview = ["apt-get", "-s", "remove", "{package}"]
+preview_pattern = '^Remv (?P<name>\S+)'
+unattended = ["-y"]
 
 [upgrade_pkg]
 command = ["apt-get", "install", "--only-upgrade", "-y", "{package}"]

@@ -182,6 +182,19 @@ pub struct PackageAction {
     pub command: Vec<String>,
     #[serde(default)]
     pub sudo: bool,
+    /// A dry run (never as root) whose output lists every package the
+    /// command would affect, matched by `preview_pattern`'s `name` group.
+    /// For commands that ask before doing more than asked (apt removing
+    /// dependents): without a terminal to ask in (the GUI), pmm shows this
+    /// list in its own confirmation instead.
+    #[serde(default)]
+    pub preview: Option<Vec<String>>,
+    #[serde(default)]
+    pub preview_pattern: Option<String>,
+    /// Added to `command` when nobody can answer its questions (the GUI,
+    /// after its own confirmation), e.g. `["-y"]`.
+    #[serde(default)]
+    pub unattended: Vec<String>,
 }
 
 /// Searching a manager's repository. `{query}` in `command` is replaced by
@@ -261,6 +274,17 @@ pub fn parse(text: &str) -> Result<Recipe> {
     ] {
         if let Some(action) = action {
             check_placeholder(section, &action.command, &["{package}", "{version}"])?;
+            match (&action.preview, &action.preview_pattern) {
+                (None, None) => {}
+                (Some(preview), Some(pattern)) => {
+                    check_placeholder(section, preview, &["{package}", "{version}"])?;
+                    let re = Regex::new(pattern).with_context(|| format!("{section} preview_pattern isn't a valid regex"))?;
+                    if !re.capture_names().flatten().any(|n| n == "name") {
+                        bail!("{section} preview_pattern needs a (?P<name>...) group");
+                    }
+                }
+                _ => bail!("{section} needs both `preview` and `preview_pattern`, or neither"),
+            }
         }
     }
     if let Some(search) = &recipe.search_remote {

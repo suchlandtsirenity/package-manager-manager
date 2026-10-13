@@ -37,6 +37,12 @@ impl Step {
         Some(Step { command, sudo: action.sudo })
     }
 
+    /// The same command with `args` added, e.g. a recipe's `unattended`.
+    pub fn with_args(mut self, args: &[String]) -> Step {
+        self.command.extend(args.iter().cloned());
+        self
+    }
+
     /// The command as run, prefixed with `elevate` (`sudo`, or `pkexec` in
     /// the GUI) when it needs root.
     pub fn argv(&self, elevate: &str) -> Vec<String> {
@@ -62,6 +68,40 @@ pub fn is_package_name(name: &str) -> bool {
         && !name.starts_with('-')
         && !name.contains("..")
         && name.chars().all(|c| c.is_ascii_alphanumeric() || "@/._+:-".contains(c))
+}
+
+/// What a package command would affect, from the recipe's `preview` dry
+/// run: e.g. every package `apt-get remove` would take with it. `Ok(None)`
+/// if the recipe has no preview.
+pub fn preview(action: &recipe::PackageAction, package: &str, version: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    let (Some(command), Some(pattern)) = (&action.preview, &action.preview_pattern) else {
+        return Ok(None);
+    };
+    let dry_run = recipe::PackageAction { command: command.clone(), sudo: false, ..action.clone() };
+    let step = Step::for_package(&dry_run, package, version).ok_or("not a package name pmm will pass to a command")?;
+    let output = process::run(&step.command, std::time::Duration::from_secs(60)).map_err(|e| format!("{e:#}"))?;
+    if !output.success {
+        // The why is usually at the end, and not always on stderr: apt puts
+        // "pop-desktop : Depends: flatpak" on stdout and only "E: …" on stderr.
+        let lines: Vec<&str> = output
+            .stdout
+            .lines()
+            .chain(output.stderr.lines())
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let tail = lines[lines.len().saturating_sub(4)..].join("\n");
+        return Err(if tail.is_empty() { "the dry run failed".into() } else { tail });
+    }
+    Ok(Some(parse_preview(&output.stdout, pattern)?))
+}
+
+fn parse_preview(text: &str, pattern: &str) -> Result<Vec<String>, String> {
+    let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
+    Ok(text
+        .lines()
+        .filter_map(|line| Some(re.captures(line)?.name("name")?.as_str().to_string()))
+        .collect())
 }
 
 /// Shell-style quoting for display only; nothing is run through a shell.
@@ -146,13 +186,19 @@ mod tests {
 
     #[test]
     fn package_names_are_checked_before_filling_in() {
-        let action = recipe::PackageAction { command: cmd(&["npm", "install", "-g", "{package}"]), sudo: false };
+        let action = recipe::PackageAction {
+            command: cmd(&["npm", "install", "-g", "{package}"]),
+            sudo: false,
+            preview: None,
+            preview_pattern: None,
+            unattended: vec![],
+        };
         let step = Step::for_package(&action, "@scope/tool", None).unwrap();
         assert_eq!(step.command, cmd(&["npm", "install", "-g", "@scope/tool"]));
         for bad in ["", "-rf", "a b", "x;rm", "$(boom)", "a'b", "../../.bashrc"] {
             assert!(Step::for_package(&action, bad, None).is_none(), "{bad:?}");
         }
-        let nvm = recipe::PackageAction { command: cmd(&["sh", "-c", "nvm install {version}"]), sudo: false };
+        let nvm = recipe::PackageAction { command: cmd(&["sh", "-c", "nvm install {version}"]), ..action.clone() };
         let step = Step::for_package(&nvm, "node", Some("22.12.0")).unwrap();
         assert_eq!(step.command[2], "nvm install 22.12.0");
         assert!(Step::for_package(&nvm, "node", None).is_none());
@@ -160,6 +206,26 @@ mod tests {
         assert!(is_package_name("org.gnome.Calculator"));
         assert!(is_package_name("stable-x86_64-unknown-linux-gnu"));
         assert!(is_package_name("v22.12.0"));
+    }
+
+    #[test]
+    fn previews_what_a_command_would_affect() {
+        let apt = "NOTE: This is only a simulation!\nRemv pipx [1.4.3-1]\nRemv python3-argcomplete [3.1.4-1]\n";
+        let names = parse_preview(apt, r"^Remv (?P<name>\S+)").unwrap();
+        assert_eq!(names, ["pipx", "python3-argcomplete"]);
+
+        let action = recipe::PackageAction {
+            command: cmd(&["sh", "-c", "exit 1", "{package}"]),
+            sudo: true,
+            preview: Some(cmd(&["sh", "-c", "echo \"Remv $1 [1]\"; echo \"Remv dep [2]\"", "sh", "{package}"])),
+            preview_pattern: Some(r"^Remv (?P<name>\S+)".into()),
+            unattended: cmd(&["-y"]),
+        };
+        assert_eq!(preview(&action, "tool", None).unwrap(), Some(vec!["tool".to_string(), "dep".to_string()]));
+        let none = recipe::PackageAction { preview: None, preview_pattern: None, ..action.clone() };
+        assert_eq!(preview(&none, "tool", None).unwrap(), None);
+        let step = Step::for_package(&action, "tool", None).unwrap().with_args(&action.unattended);
+        assert_eq!(step.command.last().map(String::as_str), Some("-y"));
     }
 
     #[test]

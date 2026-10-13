@@ -2,6 +2,7 @@
 
 mod app;
 mod data;
+mod jobs;
 
 fn main() -> cosmic::iced::Result {
     let settings = cosmic::app::Settings::default()
