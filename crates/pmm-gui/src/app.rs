@@ -19,6 +19,7 @@ use pmm_core::detect::{Status, Via};
 use pmm_core::dupes::dupe_key;
 use pmm_core::inventory::rank;
 use pmm_core::recipe::PackageAction;
+use pmm_core::remote::RemoteResults;
 use pmm_core::{Rank, remote};
 
 use crate::data::{self, Row, Snapshot};
@@ -34,6 +35,9 @@ const NAME: u16 = 8;
 const VERSION: u16 = 5;
 const MANAGER: u16 = 3;
 const NOTES: u16 = 6;
+
+/// Repository results shown per manager before "Show all".
+const REMOTE_SHOWN: usize = 8;
 
 /// Info lines shown on a package page.
 const INFO_LINES: usize = 40;
@@ -78,13 +82,34 @@ impl Key {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Verb {
+    Install,
     Upgrade,
     Uninstall,
+}
+
+/// Which half of a search is showing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Tab {
+    Installed,
+    Repositories,
+}
+
+/// A search of every manager's repository, filled in as each answers.
+struct RemoteSearch {
+    /// Which search this is; answers to an older one are dropped.
+    id: usize,
+    query: String,
+    results: Vec<RemoteResults>,
+    /// Managers that haven't answered yet.
+    waiting: Vec<String>,
+    /// Managers whose results are all shown, not just the best few.
+    expanded: Vec<String>,
 }
 
 impl Verb {
     fn action(self, recipe: &pmm_core::Recipe) -> Option<&PackageAction> {
         match self {
+            Verb::Install => recipe.install_pkg.as_ref(),
             Verb::Upgrade => recipe.upgrade_pkg.as_ref(),
             Verb::Uninstall => recipe.remove_pkg.as_ref(),
         }
@@ -92,6 +117,7 @@ impl Verb {
 
     fn word(self) -> &'static str {
         match self {
+            Verb::Install => "Install",
             Verb::Upgrade => "Upgrade",
             Verb::Uninstall => "Uninstall",
         }
@@ -130,6 +156,10 @@ pub enum Message {
     Confirmed,
     Cancelled,
     Job(usize, JobEvent),
+    ShowTab(Tab),
+    SearchRepositories,
+    RemoteAnswer(usize, Box<RemoteResults>),
+    ShowAll(String),
 }
 
 pub struct App {
@@ -148,6 +178,8 @@ pub struct App {
     /// Indexes into the snapshot's rows for the current page, search and
     /// sort: worked out when one of those changes, not on every redraw.
     visible: Vec<usize>,
+    tab: Tab,
+    remote: Option<RemoteSearch>,
 }
 
 /// Run blocking work (a manager's command) on its own thread, so the window
@@ -244,13 +276,6 @@ impl App {
         copies
     }
 
-    /// A job for this copy that hasn't finished.
-    fn running(&self, key: &Key) -> bool {
-        self.jobs
-            .iter()
-            .any(|j| j.state == State::Running && j.manager == key.manager && j.package == key.name)
-    }
-
     fn open(&mut self, key: Key) -> Task<Message> {
         self.selected = Some(key.clone());
         self.set_show_context(true);
@@ -313,6 +338,151 @@ impl App {
                 d.recipe.name
             )
         })
+    }
+
+    /// Ask every repository (or only the current page's manager) about
+    /// the search box's text, in the background; answers stream in.
+    fn search_repositories(&mut self) -> Task<Message> {
+        let query = self.query.trim().to_string();
+        let Some(snapshot) = self.snapshot.clone() else { return Task::none() };
+        if query.is_empty() {
+            return Task::none();
+        }
+        let only = match self.page() {
+            Page::Manager(m) => Some(m),
+            _ => None,
+        };
+        let detections: Vec<_> = remote::searchable(&snapshot.detections)
+            .into_iter()
+            .filter(|d| only.as_ref().is_none_or(|m| &d.recipe.name == m))
+            .cloned()
+            .collect();
+        let id = self.remote.as_ref().map_or(0, |r| r.id + 1);
+        self.tab = Tab::Repositories;
+        self.remote = Some(RemoteSearch {
+            id,
+            query: query.clone(),
+            results: Vec::new(),
+            waiting: detections.iter().map(|d| d.recipe.name.clone()).collect(),
+            expanded: Vec::new(),
+        });
+        if detections.is_empty() {
+            return Task::none();
+        }
+        let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            // Installed marks come from the snapshot instead (see `is_installed`).
+            let _ = remote::search_remote(&detections, &[], &query, |results| {
+                let _ = tx.unbounded_send(results);
+            });
+        });
+        use cosmic::iced::futures::StreamExt;
+        cosmic::task::stream(rx.map(move |results| Message::RemoteAnswer(id, Box::new(results))))
+    }
+
+    /// Whether `manager` has `name` installed, by the duplicate rules.
+    fn is_installed(&self, manager: &str, name: &str) -> bool {
+        let key = dupe_key(name);
+        self.snapshot
+            .as_ref()
+            .is_some_and(|s| s.rows.iter().any(|r| r.manager == manager && dupe_key(&r.package.name) == key))
+    }
+
+    /// A job for `name` with `manager` that hasn't finished.
+    fn busy(&self, manager: &str, name: &str) -> bool {
+        self.jobs.iter().any(|j| j.state == State::Running && j.manager == manager && j.package == name)
+    }
+
+    fn repositories<'a>(&'a self, snapshot: &'a Snapshot) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+        let Some(search) = &self.remote else {
+            return widget::container(widget::text::body("Press Enter in the search box to look in every manager's repository."))
+                .center(Length::Fill)
+                .into();
+        };
+        let mut list = widget::Column::new().spacing(spacing.space_s);
+        let status = match search.waiting.as_slice() {
+            [] => format!("Results for “{}”", search.query),
+            waiting => format!("Results for “{}” · waiting for {}…", search.query, waiting.join(", ")),
+        };
+        list = list.push(widget::text::caption(status));
+
+        let mut empty = Vec::new();
+        for results in &search.results {
+            let found = match &results.found {
+                Ok(found) if found.is_empty() => {
+                    empty.push(if results.exact_only {
+                        format!("{} (exact names only)", results.manager)
+                    } else {
+                        results.manager.clone()
+                    });
+                    continue;
+                }
+                Ok(found) => found,
+                Err(e) => {
+                    list = list.push(widget::warning(format!("Couldn't search {}: {e}", results.manager)));
+                    continue;
+                }
+            };
+            let recipe = snapshot.detection(&results.manager).map(|d| &d.recipe);
+            let can_install = recipe.is_some_and(|r| r.install_pkg.is_some());
+            let all = search.expanded.contains(&results.manager);
+            let shown = if all { found.len() } else { found.len().min(REMOTE_SHOWN) };
+
+            let mut group = widget::Column::new()
+                .push(widget::text::heading(format!("{}  ·  {:.1}s", results.manager, results.took.as_secs_f32())))
+                .spacing(spacing.space_xxs);
+            for f in &found[..shown] {
+                let p = &f.package;
+                let installed = self.is_installed(&results.manager, &p.name);
+                let action: Element<'a, Message> = if installed {
+                    widget::text::caption("Installed").class(cosmic::theme::Text::Accent).into()
+                } else if self.busy(&results.manager, &p.name) {
+                    widget::text::caption("Installing…").into()
+                } else if can_install {
+                    widget::button::standard("Install")
+                        .on_press(Message::Run(
+                            Verb::Install,
+                            Key { manager: results.manager.clone(), name: p.name.clone(), version: None },
+                        ))
+                        .into()
+                } else {
+                    widget::text::caption(format!("{} can't install here", results.manager)).into()
+                };
+                let about = [p.title.as_deref(), p.note.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                let name = widget::text::body(p.name.as_str()).wrapping(Wrapping::None);
+                let name: Element<'a, Message> = if f.rank == Rank::Exact {
+                    name.font(cosmic::font::bold()).into()
+                } else {
+                    name.into()
+                };
+                let cell = |content: Element<'a, Message>, portion: u16| {
+                    widget::container(content).width(Length::FillPortion(portion)).clip(true)
+                };
+                group = group.push(
+                    widget::Row::new()
+                        .push(cell(name, 5))
+                        .push(cell(
+                            widget::text::body(clip(p.version.as_deref().unwrap_or(""), 20)).wrapping(Wrapping::None).into(),
+                            3,
+                        ))
+                        .push(cell(widget::text::caption(about).wrapping(Wrapping::None).into(), 10))
+                        .push(widget::container(action).width(Length::Fixed(140.0)).align_x(Alignment::End))
+                        .spacing(spacing.space_s)
+                        .align_y(Alignment::Center),
+                );
+            }
+            if shown < found.len() {
+                group = group.push(
+                    widget::button::text(format!("Show all {}", found.len())).on_press(Message::ShowAll(results.manager.clone())),
+                );
+            }
+            list = list.push(widget::container(group).padding(spacing.space_s).class(cosmic::theme::Container::Card).width(Length::Fill));
+        }
+        if !empty.is_empty() {
+            list = list.push(widget::text::caption(format!("No results: {}", empty.join(", "))));
+        }
+        widget::scrollable(list).height(Length::Fill).into()
     }
 
     fn header_cell(&self, label: &str, column: Column, width: Length) -> Element<'_, Message> {
@@ -458,7 +628,7 @@ impl App {
         for row in &copies {
             let copy = Key::of(row);
             let recipe = snapshot.detection(&row.manager).map(|d| &d.recipe);
-            let busy = self.running(&copy);
+            let busy = self.busy(&copy.manager, &copy.name);
             let button = |verb: Verb, destructive: bool| {
                 let available = recipe.and_then(|r| verb.action(r)).is_some();
                 let label = verb.word();
@@ -546,6 +716,8 @@ impl cosmic::Application for App {
             confirm: None,
             jobs: Vec::new(),
             visible: Vec::new(),
+            tab: Tab::Installed,
+            remote: None,
         };
         app.set_header_title("Package Manager Manager".into());
         let task = app.load(false);
@@ -601,7 +773,7 @@ impl cosmic::Application for App {
             Message::InfoLoaded(key, answer) => {
                 self.info.insert(key, Some(answer));
             }
-            Message::Run(Verb::Upgrade, key) => return self.start(Verb::Upgrade, &key),
+            Message::Run(verb @ (Verb::Install | Verb::Upgrade), key) => return self.start(verb, &key),
             Message::Run(Verb::Uninstall, key) => {
                 // Ask first; meanwhile find out what else it would remove.
                 let manager_warning = self.manager_warning(&key);
@@ -636,6 +808,19 @@ impl cosmic::Application for App {
                 }
             }
             Message::Cancelled => self.confirm = None,
+            Message::ShowTab(tab) => self.tab = tab,
+            Message::SearchRepositories => return self.search_repositories(),
+            Message::RemoteAnswer(id, results) => {
+                if let Some(search) = self.remote.as_mut().filter(|r| r.id == id) {
+                    search.waiting.retain(|m| *m != results.manager);
+                    search.results.push(*results);
+                }
+            }
+            Message::ShowAll(manager) => {
+                if let Some(search) = self.remote.as_mut() {
+                    search.expanded.push(manager);
+                }
+            }
             Message::Job(id, event) => {
                 let finished_ok = matches!(event, JobEvent::Finished(Ok(())));
                 if let Some(job) = self.jobs.get_mut(id) {
@@ -704,10 +889,32 @@ impl cosmic::Application for App {
             return widget::container(self.activity()).padding(spacing.space_s).into();
         }
 
-        let search = widget::text_input::search_input("Search installed packages", &self.query)
+        let search = widget::text_input::search_input("Search packages · Enter also searches repositories", &self.query)
             .on_input(Message::Search)
-            .on_clear(Message::ClearSearch);
-        let mut content = widget::Column::new().push(search).spacing(spacing.space_s);
+            .on_clear(Message::ClearSearch)
+            .on_submit(|_| Message::SearchRepositories);
+        let tab = |label: String, tab: Tab| {
+            let button = if self.tab == tab { widget::button::suggested(label) } else { widget::button::standard(label) };
+            button.on_press(Message::ShowTab(tab))
+        };
+        let remote_label = match &self.remote {
+            Some(r) if !r.waiting.is_empty() => "Repositories (searching…)".to_string(),
+            Some(r) => {
+                let n: usize = r.results.iter().filter_map(|x| x.found.as_ref().ok()).map(Vec::len).sum();
+                format!("Repositories ({n})")
+            }
+            None => "Repositories".to_string(),
+        };
+        let mut tabs = widget::Row::new()
+            .push(tab(format!("Installed ({})", self.visible.len()), Tab::Installed))
+            .push(tab(remote_label, Tab::Repositories))
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center);
+        let query = self.query.trim();
+        if !query.is_empty() && self.remote.as_ref().is_none_or(|r| r.query != query) {
+            tabs = tabs.push(widget::button::text(format!("Search repositories for “{query}”")).on_press(Message::SearchRepositories));
+        }
+        let mut content = widget::Column::new().push(search).push(tabs).spacing(spacing.space_s);
         if self.loading {
             content = content.push(widget::text::caption("Re-reading every manager…"));
         }
@@ -718,6 +925,10 @@ impl cosmic::Application for App {
         if running > 0 {
             content = content.push(widget::text::caption(format!("{running} running; see Activity")));
         }
-        content.push(self.table(snapshot)).padding(spacing.space_s).into()
+        let body = match self.tab {
+            Tab::Installed => self.table(snapshot),
+            Tab::Repositories => self.repositories(snapshot),
+        };
+        content.push(body).padding(spacing.space_s).into()
     }
 }
