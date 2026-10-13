@@ -28,6 +28,13 @@ use crate::jobs::{self, Job, JobEvent, State};
 /// scrolls through 3000 packages: they search.
 const SHOWN: usize = 400;
 
+/// Column widths, as shares of the table's width. Manager needs room for
+/// "Manager ▼" on one line.
+const NAME: u16 = 8;
+const VERSION: u16 = 5;
+const MANAGER: u16 = 3;
+const NOTES: u16 = 6;
+
 /// Info lines shown on a package page.
 const INFO_LINES: usize = 40;
 
@@ -138,6 +145,9 @@ pub struct App {
     info: HashMap<Key, Option<Result<String, String>>>,
     confirm: Option<Confirm>,
     jobs: Vec<Job>,
+    /// Indexes into the snapshot's rows for the current page, search and
+    /// sort: worked out when one of those changes, not on every redraw.
+    visible: Vec<usize>,
 }
 
 /// Run blocking work (a manager's command) on its own thread, so the window
@@ -190,30 +200,33 @@ impl App {
         self.nav.active_data::<Page>().cloned().unwrap_or(Page::All)
     }
 
-    /// The rows for the current page and search, best matches first when
-    /// searching, otherwise in the chosen column order.
-    fn rows<'a>(&self, snapshot: &'a Snapshot) -> Vec<&'a Row> {
+    /// Work out which rows show, best matches first when searching,
+    /// otherwise in the chosen column order.
+    fn refilter(&mut self) {
+        let Some(snapshot) = self.snapshot.clone() else { return };
         let page = self.page();
         let query = self.query.trim().to_lowercase();
-        let mut rows: Vec<(&Row, Option<Rank>)> = snapshot
+        let mut rows: Vec<(usize, Option<Rank>)> = snapshot
             .rows
             .iter()
-            .filter(|r| match &page {
+            .enumerate()
+            .filter(|(_, r)| match &page {
                 Page::All | Page::Activity => true,
                 Page::Duplicates => !r.also.is_empty(),
                 Page::Manager(m) => &r.manager == m,
             })
-            .filter_map(|r| match query.is_empty() {
-                true => Some((r, None)),
-                false => rank(&r.package, &query).map(|k| (r, Some(k))),
+            .filter_map(|(i, r)| match query.is_empty() {
+                true => Some((i, None)),
+                false => rank(&r.package, &query).map(|k| (i, Some(k))),
             })
             .collect();
-        rows.sort_by(|(a, ra), (b, rb)| ra.cmp(rb).then_with(|| self.compare(a, b)));
-        rows.into_iter().map(|(r, _)| r).collect()
+        let rows_of = &snapshot.rows;
+        rows.sort_by(|(a, ra), (b, rb)| ra.cmp(rb).then_with(|| self.compare(&rows_of[*a], &rows_of[*b])));
+        self.visible = rows.into_iter().map(|(i, _)| i).collect();
     }
 
     fn compare(&self, a: &Row, b: &Row) -> Ordering {
-        let by_name = |a: &Row, b: &Row| a.package.name.to_lowercase().cmp(&b.package.name.to_lowercase());
+        let by_name = |a: &Row, b: &Row| a.sort_name.cmp(&b.sort_name);
         let order = match self.sort {
             Column::Name => by_name(a, b).then_with(|| a.manager.cmp(&b.manager)),
             Column::Version => a.package.version.cmp(&b.package.version).then_with(|| by_name(a, b)),
@@ -310,23 +323,33 @@ impl App {
         };
         // Buttons size to their label; the container gives the column its
         // share of the width, the same as the cells below.
-        widget::container(widget::button::text(format!("{label}{arrow}")).on_press(Message::Sort(column)))
-            .width(width)
-            .into()
+        // A text button whose label never wraps (the arrow used to drop onto
+        // a second line in narrow columns).
+        let label = widget::text::body(format!("{label}{arrow}")).wrapping(Wrapping::None);
+        let spacing = cosmic::theme::spacing();
+        widget::container(
+            widget::button::custom(label)
+                .class(cosmic::theme::Button::Text)
+                .padding([spacing.space_xxs, spacing.space_s])
+                .on_press(Message::Sort(column)),
+        )
+        .width(width)
+        .clip(true)
+        .into()
     }
 
     fn table<'a>(&'a self, snapshot: &'a Snapshot) -> Element<'a, Message> {
-        let rows = self.rows(snapshot);
+        let rows: Vec<&Row> = self.visible.iter().filter_map(|&i| snapshot.rows.get(i)).collect();
         let spacing = cosmic::theme::spacing();
 
         let header = widget::Row::new()
-            .push(self.header_cell("Name", Column::Name, Length::FillPortion(4)))
-            .push(self.header_cell("Version", Column::Version, Length::FillPortion(2)))
-            .push(self.header_cell("Manager", Column::Manager, Length::FillPortion(1)))
+            .push(self.header_cell("Name", Column::Name, Length::FillPortion(NAME)))
+            .push(self.header_cell("Version", Column::Version, Length::FillPortion(VERSION)))
+            .push(self.header_cell("Manager", Column::Manager, Length::FillPortion(MANAGER)))
             .push(
                 widget::container(widget::text::heading("Notes"))
                     .padding([0, spacing.space_s])
-                    .width(Length::FillPortion(3)),
+                    .width(Length::FillPortion(NOTES)),
             )
             .spacing(spacing.space_s)
             .align_y(Alignment::Center);
@@ -351,10 +374,10 @@ impl App {
             };
             let one_line = |text: String| widget::text::body(text).wrapping(Wrapping::None).into();
             let line = widget::Row::new()
-                .push(cell(one_line(row.package.name.clone()), 4))
-                .push(cell(one_line(clip(row.package.version.as_deref().unwrap_or(""), 30)), 2))
-                .push(cell(one_line(row.manager.clone()), 1))
-                .push(cell(notes.into(), 3))
+                .push(cell(one_line(row.package.name.clone()), NAME))
+                .push(cell(one_line(clip(row.package.version.as_deref().unwrap_or(""), 30)), VERSION))
+                .push(cell(one_line(row.manager.clone()), MANAGER))
+                .push(cell(notes.into(), NOTES))
                 .spacing(spacing.space_s)
                 .align_y(Alignment::Center);
             list = list.push(
@@ -522,6 +545,7 @@ impl cosmic::Application for App {
             info: HashMap::new(),
             confirm: None,
             jobs: Vec::new(),
+            visible: Vec::new(),
         };
         app.set_header_title("Package Manager Manager".into());
         let task = app.load(false);
@@ -534,6 +558,7 @@ impl cosmic::Application for App {
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
         self.nav.activate(id);
+        self.refilter();
         Task::none()
     }
 
@@ -543,14 +568,21 @@ impl cosmic::Application for App {
                 self.loading = false;
                 self.fill_nav(&snapshot);
                 self.snapshot = Some(snapshot);
+                self.refilter();
                 // Details may have changed with the packages.
                 self.info.clear();
                 if let Some(key) = self.selected.clone() {
                     return self.open(key);
                 }
             }
-            Message::Search(query) => self.query = query,
-            Message::ClearSearch => self.query.clear(),
+            Message::Search(query) => {
+                self.query = query;
+                self.refilter();
+            }
+            Message::ClearSearch => {
+                self.query.clear();
+                self.refilter();
+            }
             Message::Refresh => {
                 if !self.loading {
                     return self.load(true);
@@ -559,6 +591,7 @@ impl cosmic::Application for App {
             Message::Sort(column) => {
                 self.ascending = self.sort != column || !self.ascending;
                 self.sort = column;
+                self.refilter();
             }
             Message::Open(key) => return self.open(key),
             Message::CloseDrawer => {

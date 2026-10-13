@@ -12,6 +12,8 @@ pub struct Row {
     pub package: Package,
     /// The other managers that have the same package.
     pub also: Vec<String>,
+    /// The name lowercased once, for sorting.
+    pub sort_name: String,
 }
 
 impl Row {
@@ -88,6 +90,7 @@ pub fn load(refresh: bool) -> Snapshot {
         .filter_map(|inv| Some((inv, inv.packages.as_ref().ok()?)))
         .flat_map(|(inv, packages)| {
             packages.iter().map(|p| Row {
+                sort_name: p.name.to_lowercase(),
                 manager: inv.manager.clone(),
                 also: also.get(&(inv.manager.clone(), p.name.clone())).cloned().unwrap_or_default(),
                 package: p.clone(),
