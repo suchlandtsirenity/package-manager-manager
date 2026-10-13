@@ -14,3 +14,6 @@ watch = ["/home/linuxbrew/.linuxbrew/Cellar", "/home/linuxbrew/.linuxbrew/Cellar
 
 [binaries]
 glob = ["/home/linuxbrew/.linuxbrew/Cellar/{package}/*/bin/*", "/home/linuxbrew/.linuxbrew/Cellar/{package}/*/sbin/*"]
+
+[update]
+commands = [["brew", "update"], ["brew", "upgrade"]]

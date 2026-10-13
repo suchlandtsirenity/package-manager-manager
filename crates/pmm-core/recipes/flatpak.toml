@@ -14,3 +14,7 @@ watch = ["/var/lib/flatpak/app", "/var/lib/flatpak/app/*", "~/.local/share/flatp
 
 [binaries]
 glob = ["/var/lib/flatpak/exports/bin/{package}", "~/.local/share/flatpak/exports/bin/{package}"]
+
+[update]
+# Updates both user and system installs; flatpak asks polkit itself when needed.
+commands = [["flatpak", "update", "-y"]]

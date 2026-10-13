@@ -10,6 +10,7 @@ pub mod inventory;
 pub mod paths;
 pub mod process;
 pub mod recipe;
+pub mod update;
 
 pub use cache::Cache;
 pub use detect::{Detection, Owners, Status, Via, detect_all};

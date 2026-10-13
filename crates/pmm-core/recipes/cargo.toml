@@ -15,3 +15,9 @@ watch = ["~/.cargo/.crates2.json", "~/.cargo/.crates.toml"]
 
 [binaries]
 builtin = "cargo-bins"
+
+[update]
+# cargo has no "upgrade all". Use cargo-update if it's installed; otherwise
+# reinstall each crates.io package, which cargo skips when it's up to date.
+# Packages installed from a path or git (with a "(…)" after the version) are left alone.
+commands = [["sh", "-c", "if command -v cargo-install-update >/dev/null; then cargo install-update -a; else cargo install --list | sed -n 's/^\\([^ ]*\\) v[^ ]*:$/\\1/p' | xargs -r -n1 cargo install; fi"]]

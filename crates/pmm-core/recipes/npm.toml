@@ -14,3 +14,7 @@ watch = ["~/.nvm/versions/node", "~/.nvm/versions/node/*/lib/node_modules", "/us
 
 [binaries]
 builtin = "npm-bins"
+
+[update]
+# Only the active Node version's globals (under nvm, each version has its own).
+commands = [["npm", "update", "-g"]]

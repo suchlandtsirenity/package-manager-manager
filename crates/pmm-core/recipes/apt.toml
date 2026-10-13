@@ -18,3 +18,9 @@ watch = ["/var/lib/dpkg/status"]
 [binaries]
 command = ["dpkg", "-L", "{package}"]
 pattern = '^/(?:usr/)?(?:s?bin|games)/(?P<name>[^/]+)$'
+
+[update]
+# apt-get rather than apt: apt warns that its output isn't stable for scripts.
+# --with-new-pkgs lets upgrades pull in new dependencies, like `apt upgrade`.
+commands = [["apt-get", "update"], ["apt-get", "-y", "--with-new-pkgs", "upgrade"]]
+sudo = true

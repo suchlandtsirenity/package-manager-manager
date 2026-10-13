@@ -18,3 +18,6 @@ watch = ["~/.local/lib/python*/site-packages", "/usr/local/lib/python*/dist-pack
 
 [binaries]
 builtin = "pip-scripts"
+
+# No [update]: pip has no "upgrade all", and upgrading every package blindly
+# breaks ones that pin each other's versions.

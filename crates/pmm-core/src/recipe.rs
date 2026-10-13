@@ -29,6 +29,9 @@ pub struct Recipe {
     /// tell which copy of a duplicated package runs.
     #[serde(default)]
     pub binaries: Option<Binaries>,
+    /// How to update everything it has installed. Missing means pmm can't.
+    #[serde(default)]
+    pub update: Option<Update>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -95,6 +98,18 @@ pub struct Binaries {
     pub builtin: Option<String>,
 }
 
+/// How to update everything a manager has installed.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Update {
+    /// Commands run in order; pmm stops at the first one that fails.
+    pub commands: Vec<Vec<String>>,
+    /// The commands need root. pmm adds `sudo` itself (`pkexec` in the GUI),
+    /// so don't put it in `commands`.
+    #[serde(default)]
+    pub sudo: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Source {
     #[default]
@@ -131,7 +146,26 @@ pub fn parse(text: &str) -> Result<Recipe> {
     if let Some(binaries) = &recipe.binaries {
         check_binaries(binaries)?;
     }
+    if let Some(update) = &recipe.update {
+        check_update(update)?;
+    }
     Ok(recipe)
+}
+
+fn check_update(update: &Update) -> Result<()> {
+    if update.commands.is_empty() {
+        bail!("[update] commands is empty");
+    }
+    for command in &update.commands {
+        match command.first().map(String::as_str) {
+            None => bail!("[update] has an empty command"),
+            Some("sudo" | "pkexec" | "doas") => {
+                bail!("[update] set `sudo = true` instead of starting a command with {}", command[0])
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 fn check_binaries(b: &Binaries) -> Result<()> {
@@ -301,6 +335,16 @@ mod tests {
         assert!(parse(&bad_builtin).unwrap_err().to_string().contains("doesn't exist"));
         let both = format!("{base}builtin = \"nvm\"\ncommand = [\"x\"]\n");
         assert!(parse(&both).is_err());
+    }
+
+    #[test]
+    fn update_section_is_checked() {
+        let base = "name = \"x\"\ndescription = \"x\"\n[detect]\nbinary = \"x\"\n[update]\n";
+        assert!(parse(&format!("{base}commands = [[\"x\", \"up\"]]\nsudo = true\n")).is_ok());
+        assert!(parse(&format!("{base}commands = []\n")).is_err());
+        assert!(parse(&format!("{base}commands = [[]]\n")).is_err());
+        let sudo = parse(&format!("{base}commands = [[\"sudo\", \"x\"]]\n")).unwrap_err();
+        assert!(sudo.to_string().contains("sudo = true"), "{sudo}");
     }
 
     #[test]

@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use clap::{Parser, Subcommand};
 use owo_colors::{OwoColorize, Stream::Stdout};
 use pmm_core::{
     Cache, Detection, Env, Inventory, Owners, Rank, Source, Status, Via, cache, detect_all,
-    list_all, package_dupes, recipe, search, shadowed_commands, which_runs,
+    list_all, package_dupes, recipe, search, shadowed_commands, update, which_runs,
 };
+use pmm_core::update::{Event, Plan};
 
 /// pmm — the package manager manager.
 #[derive(Parser)]
@@ -55,6 +56,15 @@ enum Cmd {
         /// Re-read from the managers instead of using the cache.
         #[arg(long)]
         refresh: bool,
+    },
+    /// Update everything each manager has installed.
+    Update {
+        /// Only this manager.
+        #[arg(short, long)]
+        manager: Option<String>,
+        /// Show what would run, without running it.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -109,6 +119,12 @@ fn main() -> ExitCode {
             status(&detections, &inventories, &env, &cache);
             Ok(())
         }
+        Cmd::Update { manager, dry_run } => {
+            select_installed(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
+                let inventories = list_all(&d, &env, &cache, false);
+                update_all(&d, &inventories, dry_run)
+            })
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -126,8 +142,20 @@ enum Failure {
     Message(String),
 }
 
-/// Keep only `manager` if one was named, checking that it exists and is installed.
+/// Keep only `manager` if one was named, checking that it exists, is
+/// installed and can be listed.
 fn select(detections: Vec<Detection>, manager: Option<&str>) -> Result<Vec<Detection>, Failure> {
+    let selected = select_installed(detections, manager)?;
+    if let (Some(name), Some(d)) = (manager, selected.first()) {
+        if d.recipe.list.is_none() {
+            return Err(Failure::Message(format!("pmm can't list {name}'s packages yet")));
+        }
+    }
+    Ok(selected)
+}
+
+/// Keep only `manager` if one was named, checking that it exists and is installed.
+fn select_installed(detections: Vec<Detection>, manager: Option<&str>) -> Result<Vec<Detection>, Failure> {
     let Some(name) = manager else {
         return Ok(detections);
     };
@@ -140,9 +168,6 @@ fn select(detections: Vec<Detection>, manager: Option<&str>) -> Result<Vec<Detec
     };
     if !d.is_installed() {
         return Err(Failure::Message(format!("{name} isn't installed")));
-    }
-    if d.recipe.list.is_none() {
-        return Err(Failure::Message(format!("pmm can't list {name}'s packages yet")));
     }
     Ok(vec![d.clone()])
 }
@@ -518,5 +543,121 @@ fn status(detections: &[Detection], inventories: &[Inventory], env: &Env, cache:
                 println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
             }
         }
+    }
+}
+
+/// How the CLI gets root for steps that need it.
+const ELEVATE: &str = "sudo";
+
+/// "8s", "2m 05s".
+fn took(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 { format!("{secs}s") } else { format!("{}m {:02}s", secs / 60, secs % 60) }
+}
+
+enum Outcome {
+    Updated(Duration),
+    Failed(update::Failed),
+    NoSudo,
+}
+
+fn update_all(detections: &[Detection], inventories: &[Inventory], dry_run: bool) -> Result<(), Failure> {
+    let planned = update::plan(detections, inventories);
+    let to_run: Vec<(&str, &[update::Step], bool)> = planned
+        .iter()
+        .filter_map(|p| match &p.plan {
+            Plan::Run(steps) => Some((p.manager.as_str(), steps.as_slice(), p.needs_sudo())),
+            Plan::Skip(_) => None,
+        })
+        .collect();
+    let width = planned.iter().map(|p| p.manager.len()).max().unwrap_or(0);
+
+    // The plan: every command, sudo ones included, before anything runs.
+    if to_run.is_empty() {
+        println!("Nothing to update.");
+    } else {
+        heading(&format!("{} to update\n", count(to_run.len(), "managers")));
+        for (manager, steps, _) in &to_run {
+            for (i, step) in steps.iter().enumerate() {
+                let name = if i == 0 { *manager } else { "" };
+                println!("  {name:<width$}  {}", step.shown(ELEVATE));
+            }
+        }
+    }
+    let skipped: Vec<(&str, update::Skip)> = planned
+        .iter()
+        .filter_map(|p| match p.plan {
+            Plan::Skip(why) => Some((p.manager.as_str(), why)),
+            Plan::Run(_) => None,
+        })
+        .collect();
+    if !skipped.is_empty() {
+        println!("\n{}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
+        for (manager, why) in &skipped {
+            let line = format!("  {manager:<width$}  {}", why.reason());
+            println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+        }
+    }
+    if dry_run {
+        println!("\nDry run: nothing was changed.");
+        return Ok(());
+    }
+    if to_run.is_empty() {
+        return Ok(());
+    }
+
+    // Ask for the password once, up front, rather than in the middle of
+    // another manager's output. If it's refused, the rest still runs.
+    let needs_sudo: Vec<&str> = to_run.iter().filter(|(_, _, sudo)| *sudo).map(|(m, _, _)| *m).collect();
+    let have_sudo = needs_sudo.is_empty() || {
+        println!("\n{} {} sudo.", needs_sudo.join(" and "), if needs_sudo.len() == 1 { "needs" } else { "need" });
+        std::process::Command::new(ELEVATE).arg("-v").status().is_ok_and(|s| s.success())
+    };
+
+    let mut outcomes: Vec<(&str, Outcome)> = Vec::new();
+    for (i, (manager, steps, sudo)) in to_run.iter().enumerate() {
+        let title = format!("── {manager} ({}/{}) ", i + 1, to_run.len());
+        println!("\n{}", title.if_supports_color(Stdout, |t| t.bold()));
+        if *sudo && !have_sudo {
+            println!("{}", "skipped: sudo wasn't given".if_supports_color(Stdout, |t| t.yellow()));
+            outcomes.push((manager, Outcome::NoSudo));
+            continue;
+        }
+        let result = update::run(steps, ELEVATE, |event| match event {
+            Event::Step(step) => {
+                let line = format!("$ {}", step.shown(ELEVATE));
+                println!("{}", line.if_supports_color(Stdout, |l| l.cyan()));
+            }
+            Event::Output(line) => println!("  {line}"),
+        });
+        outcomes.push((manager, match result {
+            Ok(time) => Outcome::Updated(time),
+            Err(failed) => Outcome::Failed(failed),
+        }));
+    }
+
+    heading("\nSummary");
+    for (manager, outcome) in &outcomes {
+        let line = match outcome {
+            Outcome::Updated(time) => format!("✓ {manager:<width$}  updated in {}", took(*time))
+                .if_supports_color(Stdout, |l| l.green())
+                .to_string(),
+            Outcome::Failed(f) => format!("✗ {manager:<width$}  `{}` {}", f.step.shown(ELEVATE), f.reason)
+                .if_supports_color(Stdout, |l| l.red())
+                .to_string(),
+            Outcome::NoSudo => format!("– {manager:<width$}  skipped: sudo wasn't given")
+                .if_supports_color(Stdout, |l| l.yellow())
+                .to_string(),
+        };
+        println!("  {line}");
+    }
+    let failed: Vec<&str> = outcomes
+        .iter()
+        .filter(|(_, o)| matches!(o, Outcome::Failed(_)))
+        .map(|(m, _)| *m)
+        .collect();
+    match failed.as_slice() {
+        [] => Ok(()),
+        _ => Err(Failure::Message(format!("couldn't update {}", failed.join(", ")))),
     }
 }

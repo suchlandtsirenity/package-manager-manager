@@ -15,3 +15,7 @@ watch = ["/var/lib/snapd/state.json"]
 
 [binaries]
 glob = ["/snap/bin/{package}", "/snap/bin/{package}.*"]
+
+[update]
+commands = [["snap", "refresh"]]
+sudo = true

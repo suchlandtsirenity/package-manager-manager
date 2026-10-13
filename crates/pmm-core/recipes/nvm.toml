@@ -12,3 +12,6 @@ owns = ["~/.nvm", "~/.nvm/versions/node/*/lib/node_modules/npm", "~/.nvm/version
 builtin = "nvm"
 items = "Node versions"
 watch = ["~/.nvm/versions/node"]
+
+# No [update]: a newer Node is a new install alongside the old ones
+# (`nvm install --lts --reinstall-packages-from=current`), not an update.

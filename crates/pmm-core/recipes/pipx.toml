@@ -14,3 +14,6 @@ watch = ["~/.local/share/pipx/venvs", "~/.local/share/pipx/venvs/*/pipx_metadata
 
 [binaries]
 builtin = "pipx-apps"
+
+[update]
+commands = [["pipx", "upgrade-all"]]

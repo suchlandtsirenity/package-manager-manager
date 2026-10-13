@@ -44,7 +44,7 @@ A recipe declares:
 | `name`, `description` | identity |
 | `detect` | binary name(s) to look for in PATH, or a path to check |
 | `list` | command + parser (`lines` with a regex, `json`, or a named built-in parser) |
-| `update` | command(s) to update everything; `needs_sudo` flag |
+| `update` | `commands` run in order to update everything; `sudo = true` if they need root (pmm adds `sudo`/`pkexec` itself) |
 | `install` | one or more named install methods; first is the default |
 | `remove` | command(s) to uninstall the manager itself, plus paths it leaves behind |
 | `requires` | other managers it depends on (e.g. pnpm → npm, go via brew) |
@@ -101,6 +101,17 @@ built-in parser written in Rust.
 ### Updating
 - `pmm update [--manager <name>] [--dry-run]` — run each manager's update in turn,
   live output, keep going if one fails, summary at the end.
+  - The plan (every command, `sudo` ones included) is printed first; `--dry-run`
+    stops there.
+  - The sudo password is asked once, before anything runs. If it's refused, the
+    managers needing it are skipped and the rest still update.
+  - Within one manager, the first failing command stops it (no upgrade after a
+    failed refresh).
+  - Skipped: managers with nothing installed, and ones without an `[update]`
+    (pip: upgrading everything blindly breaks pinned dependencies; nvm: a newer
+    Node is a new install, not an update).
+  - Commands get no stdin, so a prompt takes its default instead of hanging.
+  - Exit code 2 if any manager failed.
 
 ### Managing packages
 - Searching repositories is `pmm search` (see Inventory); there is no separate command.

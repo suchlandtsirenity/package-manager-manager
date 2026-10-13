@@ -14,3 +14,6 @@ command = ["rustup", "toolchain", "list"]
 pattern = '^(?P<name>\S+)(?: \((?P<note>[^)]*)\))?'
 items = "toolchains"
 watch = ["~/.rustup/toolchains"]
+
+[update]
+commands = [["rustup", "update"]]

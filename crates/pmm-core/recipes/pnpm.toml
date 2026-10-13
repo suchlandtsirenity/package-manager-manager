@@ -10,3 +10,6 @@ owns = ["~/.local/share/pnpm"]
 [list]
 builtin = "pnpm-globals"
 watch = ["~/.local/share/pnpm/global/*/package.json"]
+
+[update]
+commands = [["pnpm", "update", "-g"]]

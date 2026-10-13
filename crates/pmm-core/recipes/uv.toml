@@ -15,3 +15,6 @@ watch = ["~/.local/share/uv/tools", "~/.local/share/uv/tools/*/uv-receipt.toml"]
 
 [binaries]
 builtin = "uv-tools"
+
+[update]
+commands = [["uv", "tool", "upgrade", "--all"]]

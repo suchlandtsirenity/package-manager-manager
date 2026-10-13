@@ -1,7 +1,8 @@
 //! Running a manager's command and collecting its output.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -75,6 +76,54 @@ pub fn run_ok(cmd: &[String], timeout: Duration) -> Result<String> {
     Ok(output.stdout)
 }
 
+/// Run `cmd` with no time limit, passing each line of stdout and stderr to
+/// `on_line` as it arrives. For long jobs like updates, whose output is shown
+/// live. Stdin is closed, so a command that stops to ask a question gets EOF
+/// (its default answer) instead of hanging.
+pub fn stream(cmd: &[String], mut on_line: impl FnMut(&str)) -> Result<ExitStatus> {
+    let (program, args) = cmd.split_first().context("empty command")?;
+    let mut child = Command::new(program)
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("HOMEBREW_NO_ENV_HINTS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("can't run {program}"))?;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    let readers: Vec<Box<dyn Read + Send>> = vec![
+        Box::new(child.stdout.take().context("no stdout")?),
+        Box::new(child.stderr.take().context("no stderr")?),
+    ];
+    let threads: Vec<_> = readers
+        .into_iter()
+        .map(|reader| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for line in BufReader::new(reader).split(b'\n') {
+                    let Ok(line) = line else { break };
+                    // Progress bars redraw a line with \r; keep its final state.
+                    let text = String::from_utf8_lossy(&line);
+                    let last = text.trim_end_matches('\r').rsplit('\r').next().unwrap_or("");
+                    if tx.send(last.to_string()).is_err() {
+                        break;
+                    }
+                }
+            })
+        })
+        .collect();
+    drop(tx);
+    for line in rx {
+        on_line(&line);
+    }
+    for t in threads {
+        let _ = t.join();
+    }
+    Ok(child.wait()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +149,19 @@ mod tests {
     fn times_out() {
         let err = run(&cmd(&["sleep", "5"]), Duration::from_millis(200)).unwrap_err();
         assert!(err.to_string().contains("didn't finish"));
+    }
+
+    #[test]
+    fn streams_both_outputs() {
+        let mut lines = Vec::new();
+        let status = stream(
+            &cmd(&["sh", "-c", "echo one; echo two >&2; printf '10%%\\r50%%\\r100%%\\n'; exit 4"]),
+            |l| lines.push(l.to_string()),
+        )
+        .unwrap();
+        assert_eq!(status.code(), Some(4));
+        lines.sort();
+        assert_eq!(lines, ["100%", "one", "two"]);
     }
 
     #[test]
