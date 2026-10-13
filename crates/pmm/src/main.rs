@@ -100,6 +100,12 @@ enum Cmd {
         #[arg(long)]
         refresh: bool,
     },
+    /// Show which installed packages have a newer version.
+    Outdated {
+        /// Only this manager.
+        #[arg(short, long)]
+        manager: Option<String>,
+    },
     /// Update everything each manager has installed.
     Update {
         /// Only this manager.
@@ -222,6 +228,12 @@ fn main() -> ExitCode {
             let inventories = list_all(&detections, &env, &cache, refresh);
             status(&detections, &inventories, &env, &cache);
             Ok(())
+        }
+        Cmd::Outdated { manager } => {
+            select_installed(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
+                let inventories = list_all(&d, &env, &cache, false);
+                outdated(&d, &inventories, manager.as_deref())
+            })
         }
         Cmd::Update { manager, dry_run } => {
             select_installed(detect_all(&loaded.recipes, &env, false), manager.as_deref()).and_then(|d| {
@@ -1139,6 +1151,80 @@ fn clip(text: &str, max: usize) -> String {
         Some((i, _)) => format!("{}…", text[..i].trim_end()),
         None => text.to_string(),
     }
+}
+
+/// Outdated packages, printed per manager as each one answers.
+fn outdated(detections: &[Detection], inventories: &[Inventory], manager: Option<&str>) -> Result<(), Failure> {
+    let checking = pmm_core::outdated::checkable(detections, inventories);
+    if checking.is_empty() {
+        return Err(Failure::Message(match manager {
+            Some(name) => format!("pmm can't check {name} for newer versions"),
+            None => "none of the installed managers can be checked for newer versions".into(),
+        }));
+    }
+    let names: Vec<&str> = checking.iter().map(|d| d.recipe.name.as_str()).collect();
+    let line = format!("Checking {}…", names.join(", "));
+    println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+
+    let mut current: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut outdated_in: Vec<String> = Vec::new();
+    pmm_core::outdated::check_all(&checking, inventories, |checked| {
+        let newer = match checked.newer {
+            Ok(newer) if newer.is_empty() => return current.push(checked.manager),
+            Ok(newer) => newer,
+            Err(e) => return failed.push(format!("{}: {e}", checked.manager)),
+        };
+        let took = format!("{:.1}s", checked.took.as_secs_f32());
+        println!(
+            "\n{} {}  {}",
+            checked.manager.if_supports_color(Stdout, |m| m.cyan()),
+            format!("({})", newer.len()).if_supports_color(Stdout, |n| n.dimmed()),
+            took.if_supports_color(Stdout, |t| t.dimmed())
+        );
+        let name_width = newer.iter().map(|n| n.name.len()).max().unwrap_or(0);
+        let versions: Vec<String> = newer.iter().map(|n| clip(n.version.as_deref().unwrap_or(""), 24)).collect();
+        let version_width = versions.iter().map(|v| v.chars().count()).max().unwrap_or(0);
+        for (n, version) in newer.iter().zip(&versions) {
+            let latest = match (&n.version, &n.latest) {
+                (Some(v), Some(l)) if v == l => "new build",
+                (_, Some(l)) => l.as_str(),
+                (_, None) => "newer version",
+            };
+            let line = if version.is_empty() {
+                format!("  {:<name_width$}  → {}", n.name, latest.if_supports_color(Stdout, |l| l.green()))
+            } else {
+                format!("  {:<name_width$}  {version:<version_width$} → {}", n.name, latest.if_supports_color(Stdout, |l| l.green()))
+            };
+            println!("{line}");
+        }
+        outdated_in.push(checked.manager);
+    });
+
+    if !current.is_empty() {
+        current.sort();
+        let line = format!("\nUp to date: {}", current.join(", "));
+        println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+    }
+    for f in &failed {
+        eprintln!("warning: couldn't check {f}");
+    }
+    if outdated_in.is_empty() {
+        if failed.is_empty() {
+            println!("Everything is up to date.");
+        }
+    } else {
+        let one = if outdated_in.len() == 1 { outdated_in[0].as_str() } else { "<manager>" };
+        let hint = format!(
+            "\nUpdate: `pmm update` (everything), `pmm update -m {one}`, or `pmm upgrade <package> -m {one}`."
+        );
+        println!("{}", hint.if_supports_color(Stdout, |h| h.dimmed()));
+    }
+    if names.contains(&"apt") {
+        let note = "apt's answer is as of the last `apt update` (`pmm update -m apt` runs it).";
+        println!("{}", note.if_supports_color(Stdout, |n| n.dimmed()));
+    }
+    Ok(())
 }
 
 /// Repository results, printed per manager as each one answers. False if

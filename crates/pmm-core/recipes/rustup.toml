@@ -33,3 +33,8 @@ command = ["rustup", "toolchain", "uninstall", "{package}"]
 
 [upgrade_pkg]
 command = ["rustup", "update", "{package}"]
+
+[outdated]
+# Toolchains only: the "rustup - Update available" line is rustup itself.
+command = ["rustup", "check"]
+pattern = '^(?P<name>\S+-\S+) - [Uu]pdate available\s*:\s*(?P<version>\S+).* -> (?P<latest>\S+)'

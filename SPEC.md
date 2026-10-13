@@ -51,6 +51,7 @@ A recipe declares:
 | `binaries` | the commands a package provides (`glob`, `command` + `pattern`, or `builtin`), for showing which copy of a duplicate runs |
 | `search_remote` | `command` with `{query}` + `pattern` (groups `name`, `version`, `title`, `description`); `exact = true` when the repository only looks up exact names |
 | `info` | `command` with `{package}`; its stdout is shown as is |
+| `outdated` | `command` + `pattern` (groups `name`, `version`, `latest`) listing installed packages with a newer version; never run as root |
 | `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions (`command` with `{package}` and/or `{version}`, `sudo`). Names are checked (letters, digits, `@/._+:-`, no `..`) before being filled in |
 
 Any field can be missing; pmm then just doesn't offer that action for that manager.
@@ -112,6 +113,11 @@ built-in parser written in Rust.
 - `pmm status` — managers detected, package totals, duplicate count, last updated.
 
 ### Updating
+- `pmm outdated [--manager <name>]` — installed packages with a newer version,
+  per manager as each answers (`installed → latest`; "new build" when only the
+  build changed). Not every manager can say: npm, brew, flatpak, snap, rustup,
+  uv and apt can; pipx and cargo ask PyPI / crates.io per package; go, nix, nvm
+  and pip can't. apt's answer is as of its last `apt update`.
 - `pmm update [--manager <name>] [--dry-run]` — run each manager's update in turn,
   live output, keep going if one fails, summary at the end.
   - The plan (every command, `sudo` ones included) is printed first; `--dry-run`
@@ -188,7 +194,10 @@ Same features as the CLI, laid out for browsing:
    `uninstall`, `upgrade`. ✅
 7. `pmm-gui`: Installed view first (done: sidebar with counts and a Duplicates
    page, search with the CLI's ranking, sortable columns, background loading),
-   then package page, Browse, Updates, Activity, managers.
+   then package page, Browse, Updates, Activity, managers. Done so far: package
+   page, Activity (jobs run one at a time from a queue), repository search with
+   Install, Updates (outdated per manager; upgrade one, update one manager, or
+   everything). Left: managers page (add/remove).
    Build with `cargo build -p pmm-gui` (needs Rust 1.93+; libcosmic pinned to a
    commit); plain `cargo build` skips it.
 8. Publish: README, CI, GitHub releases, crates.io for core + CLI.

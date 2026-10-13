@@ -50,3 +50,8 @@ sudo = true
 [upgrade_pkg]
 command = ["snap", "refresh", "{package}"]
 sudo = true
+
+[outdated]
+# Name, Version (the new one), Rev, ...; "All snaps up to date." otherwise.
+command = ["snap", "refresh", "--list"]
+pattern = '^(?P<name>[a-z0-9][a-z0-9-]*)\s+(?P<latest>\S+)\s+\d+\s'

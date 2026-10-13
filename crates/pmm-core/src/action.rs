@@ -60,6 +60,35 @@ impl Step {
     }
 }
 
+/// Runs of steps that need root become one `sh -c 'a && b'` step, so a
+/// graphical password prompt (`pkexec`, which doesn't remember) asks once
+/// per run, not once per command. Order and stop-at-first-failure are kept.
+pub fn join_sudo(steps: &[Step]) -> Vec<Step> {
+    let mut joined: Vec<Step> = Vec::new();
+    let mut run: Vec<&Step> = Vec::new();
+    let flush = |run: &mut Vec<&Step>, joined: &mut Vec<Step>| {
+        match run.as_slice() {
+            [] => {}
+            [one] => joined.push((*one).clone()),
+            many => {
+                let script = many.iter().map(|s| Step { sudo: false, ..(*s).clone() }.shown("")).collect::<Vec<_>>().join(" && ");
+                joined.push(Step { command: vec!["sh".into(), "-c".into(), script], sudo: true });
+            }
+        }
+        run.clear();
+    };
+    for step in steps {
+        if step.sudo {
+            run.push(step);
+        } else {
+            flush(&mut run, &mut joined);
+            joined.push(step.clone());
+        }
+    }
+    flush(&mut run, &mut joined);
+    joined
+}
+
 /// Letters, digits and `@/._+:-`: enough for npm scopes, flatpak ids,
 /// toolchains and versions, nothing a shell would interpret, and no `..`
 /// (some commands build a path from the name).
@@ -246,6 +275,26 @@ mod tests {
         assert_eq!(output, ["first"]);
         assert_eq!(err.step, steps[1]);
         assert_eq!(err.reason, "exited with code 3");
+    }
+
+    #[test]
+    fn sudo_runs_are_joined() {
+        let apt = vec![
+            Step { command: cmd(&["apt-get", "update"]), sudo: true },
+            Step { command: cmd(&["apt-get", "-y", "upgrade"]), sudo: true },
+        ];
+        let joined = join_sudo(&apt);
+        assert_eq!(joined, [Step { command: cmd(&["sh", "-c", "apt-get update && apt-get -y upgrade"]), sudo: true }]);
+        let user = Step { command: cmd(&["sh", "-c", "echo 'hi'; exit 0"]), sudo: false };
+        let mixed = vec![apt[0].clone(), user.clone(), apt[0].clone(), apt[1].clone()];
+        let joined = join_sudo(&mixed);
+        assert_eq!(joined.len(), 3);
+        assert_eq!(joined[0], apt[0]);
+        assert_eq!(joined[1], user);
+        // Quoted so the shell gets the same arguments back.
+        let twice = join_sudo(&[Step { sudo: true, ..user.clone() }, Step { sudo: true, ..user }]);
+        let out = std::process::Command::new("sh").args(&twice[0].command[1..]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\nhi\n");
     }
 
     #[test]

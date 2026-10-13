@@ -53,3 +53,8 @@ command = ["npm", "uninstall", "-g", "{package}"]
 
 [upgrade_pkg]
 command = ["npm", "install", "-g", "{package}@latest"]
+
+[outdated]
+# path:name@wanted:name@current:name@latest:dependent (active Node version only).
+command = ["npm", "outdated", "-g", "--parseable"]
+pattern = '^[^:]*:(?P<name>@?[^@:]+)@[^:]*:@?[^@:]+@(?P<version>[^:]*):@?[^@:]+@(?P<latest>[^:]*)'

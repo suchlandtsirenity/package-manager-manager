@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use pmm_core::{Cache, Detection, Env, Package, detect_all, list_all, package_dupes, recipe};
+use pmm_core::{Cache, Detection, Env, Inventory, Package, detect_all, list_all, package_dupes, recipe};
 
 /// One installed package, as a table row.
 #[derive(Debug, Clone)]
@@ -39,6 +39,8 @@ pub struct Manager {
 pub struct Snapshot {
     /// Every known manager, with its recipe: what the GUI can do with it.
     pub detections: Vec<Detection>,
+    /// Each manager's list, as read (for checks that need it, like updates).
+    pub inventories: Vec<Inventory>,
     pub managers: Vec<Manager>,
     pub rows: Vec<Row>,
     /// Packages installed by more than one manager (as `pmm dupes` counts
@@ -97,7 +99,7 @@ pub fn load(refresh: bool) -> Snapshot {
             })
         })
         .collect();
-    Snapshot { detections, managers, rows, duplicate_packages, problems }
+    Snapshot { detections, inventories, managers, rows, duplicate_packages, problems }
 }
 
 impl Snapshot {

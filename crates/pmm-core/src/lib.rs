@@ -10,6 +10,7 @@ pub mod dupes;
 pub mod inventory;
 pub mod manage;
 pub mod manifest;
+pub mod outdated;
 pub mod paths;
 pub mod process;
 pub mod recipe;

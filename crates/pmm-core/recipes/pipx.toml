@@ -73,3 +73,26 @@ command = ["pipx", "uninstall", "{package}"]
 
 [upgrade_pkg]
 command = ["pipx", "upgrade", "{package}"]
+
+[outdated]
+# pipx has no "outdated": ask PyPI about each app, a few at a time.
+command = ["python3", "-c", '''
+import json, subprocess, sys, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+listed = subprocess.run(["pipx", "list", "--short"], capture_output=True, text=True, check=True).stdout
+installed = [line.split()[:2] for line in listed.splitlines() if len(line.split()) >= 2]
+def latest(name):
+    try:
+        return json.load(urllib.request.urlopen("https://pypi.org/pypi/" + name + "/json", timeout=20))["info"]["version"]
+    except Exception as e:
+        return e
+with ThreadPoolExecutor(8) as pool:
+    answers = list(pool.map(lambda p: latest(p[0]), installed))
+errors = [a for a in answers if isinstance(a, Exception)]
+if installed and len(errors) == len(installed):
+    sys.exit(f"can't reach PyPI: {errors[0]}")
+for (name, version), new in zip(installed, answers):
+    if isinstance(new, str) and new != version:
+        print(name, version, new, sep="\t")
+''']
+pattern = '^(?P<name>[^\t]+)\t(?P<version>[^\t]+)\t(?P<latest>[^\t]+)$'

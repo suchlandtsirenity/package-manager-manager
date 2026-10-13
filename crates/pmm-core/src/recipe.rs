@@ -51,6 +51,9 @@ pub struct Recipe {
     /// How to show details about one package.
     #[serde(default)]
     pub info: Option<Info>,
+    /// How to list installed packages that have a newer version.
+    #[serde(default)]
+    pub outdated: Option<Outdated>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -218,6 +221,19 @@ pub struct Info {
     pub command: Vec<String>,
 }
 
+/// Which installed packages have a newer version: each line of `command`'s
+/// output is matched against `pattern`, with groups `name` (required),
+/// `version` (installed) and `latest`. Never run as root, so it shows what
+/// the manager last fetched (apt's lists are as of the last `apt update`).
+/// A non-zero exit with matching lines is fine (`npm outdated` exits 1 when
+/// it finds something).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Outdated {
+    pub command: Vec<String>,
+    pub pattern: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Source {
     #[default]
@@ -296,6 +312,13 @@ pub fn parse(text: &str) -> Result<Recipe> {
     }
     if let Some(info) = &recipe.info {
         check_placeholder("[info]", &info.command, &["{package}"])?;
+    }
+    if let Some(outdated) = &recipe.outdated {
+        check_commands("[outdated]", std::slice::from_ref(&outdated.command))?;
+        let re = Regex::new(&outdated.pattern).context("[outdated] pattern isn't a valid regex")?;
+        if !re.capture_names().flatten().any(|n| n == "name") {
+            bail!("[outdated] pattern needs a (?P<name>...) group");
+        }
     }
     Ok(recipe)
 }
@@ -557,6 +580,10 @@ mod tests {
         assert!(parse(&search_no_name).is_err());
         let info_no_placeholder = format!("{base}[info]\ncommand = [\"x\", \"info\"]\n");
         assert!(parse(&info_no_placeholder).is_err());
+        let outdated = format!("{base}[outdated]\ncommand = [\"x\", \"outdated\"]\npattern = '^(?P<name>\\S+) (?P<latest>\\S+)'\n");
+        assert!(parse(&outdated).is_ok());
+        let outdated_sudo = format!("{base}[outdated]\ncommand = [\"sudo\", \"x\"]\npattern = '^(?P<name>\\S+)'\n");
+        assert!(parse(&outdated_sudo).is_err());
     }
 
     #[test]

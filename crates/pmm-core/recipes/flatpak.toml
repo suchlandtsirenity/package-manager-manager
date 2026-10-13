@@ -47,3 +47,8 @@ command = ["flatpak", "uninstall", "-y", "{package}"]
 
 [upgrade_pkg]
 command = ["flatpak", "update", "-y", "{package}"]
+
+[outdated]
+# Apps and runtimes, from every installation; the version is the new one.
+command = ["flatpak", "remote-ls", "--updates", "--columns=application,version"]
+pattern = '^(?P<name>[^\s.]+\.[^\t\s]+)(?:\t(?P<latest>[^\t]*))?$'

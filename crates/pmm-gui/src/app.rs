@@ -1,7 +1,7 @@
 //! The window: a sidebar of managers, one searchable, sortable table of
 //! everything installed (duplicates flagged), a package page in the side
-//! drawer with Upgrade and Uninstall, and an Activity page with the live
-//! output of what pmm ran.
+//! drawer with Upgrade and Uninstall, an Updates page, and an Activity page
+//! with the live output of what pmm ran.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -18,8 +18,10 @@ use pmm_core::action::{self, Step};
 use pmm_core::detect::{Status, Via};
 use pmm_core::dupes::dupe_key;
 use pmm_core::inventory::rank;
+use pmm_core::outdated::{self, Checked};
 use pmm_core::recipe::PackageAction;
 use pmm_core::remote::RemoteResults;
+use pmm_core::update::{self, Plan};
 use pmm_core::{Rank, remote};
 
 use crate::data::{self, Row, Snapshot};
@@ -46,6 +48,7 @@ const INFO_LINES: usize = 40;
 #[derive(Debug, Clone, PartialEq)]
 enum Page {
     All,
+    Updates,
     Duplicates,
     Manager(String),
     Activity,
@@ -106,6 +109,19 @@ struct RemoteSearch {
     expanded: Vec<String>,
 }
 
+/// What each manager says is outdated, filled in as each answers.
+struct UpdateCheck {
+    results: Vec<Checked>,
+    /// Managers that haven't answered yet.
+    waiting: Vec<String>,
+}
+
+impl UpdateCheck {
+    fn count(&self) -> usize {
+        self.results.iter().filter_map(|c| c.newer.as_ref().ok()).map(Vec::len).sum()
+    }
+}
+
 impl Verb {
     fn action(self, recipe: &pmm_core::Recipe) -> Option<&PackageAction> {
         match self {
@@ -160,6 +176,10 @@ pub enum Message {
     SearchRepositories,
     RemoteAnswer(usize, Box<RemoteResults>),
     ShowAll(String),
+    CheckUpdates,
+    UpdatesAnswer(Box<Checked>),
+    /// Run one manager's update, or every manager's (`pmm update`).
+    UpdateManagers(Option<String>),
 }
 
 pub struct App {
@@ -180,6 +200,8 @@ pub struct App {
     visible: Vec<usize>,
     tab: Tab,
     remote: Option<RemoteSearch>,
+    updates: Option<UpdateCheck>,
+    queue: jobs::Queue,
 }
 
 /// Run blocking work (a manager's command) on its own thread, so the window
@@ -206,6 +228,8 @@ impl App {
         let selected = self.page();
         self.nav.clear();
         let all = self.nav.insert().text(format!("All packages  {}", snapshot.rows.len())).data(Page::All).id();
+        let updates = self.updates_label();
+        self.nav.insert().text(updates).data(Page::Updates);
         self.nav
             .insert()
             .text(format!("Duplicates  {}", snapshot.duplicate_packages))
@@ -243,7 +267,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, r)| match &page {
-                Page::All | Page::Activity => true,
+                Page::All | Page::Updates | Page::Activity => true,
                 Page::Duplicates => !r.also.is_empty(),
                 Page::Manager(m) => &r.manager == m,
             })
@@ -313,15 +337,77 @@ impl App {
         let step = match self.step(verb, key) {
             Ok(step) => step,
             Err(e) => {
-                let mut job = Job::new(format!("{} {}", verb.word(), key.label()), &Step { command: vec![], sudo: false }, &key.manager, &key.name);
+                let mut job = Job::new(format!("{} {}", verb.word(), key.label()), &[], &key.manager, &key.name);
                 job.state = State::Failed(e);
                 self.jobs.push(job);
                 return Task::none();
             }
         };
+        self.queue_job(format!("{} {}", verb.word(), key.label()), vec![step], &key.manager, &key.name)
+    }
+
+    fn queue_job(&mut self, title: String, steps: Vec<Step>, manager: &str, package: &str) -> Task<Message> {
         let id = self.jobs.len();
-        self.jobs.push(Job::new(format!("{} {}", verb.word(), key.label()), &step, &key.manager, &key.name));
-        jobs::start(id, step)
+        self.jobs.push(Job::new(title, &steps, manager, package));
+        self.queue.push(id, steps)
+    }
+
+    /// "Updates", with the count once checked.
+    fn updates_label(&self) -> String {
+        match &self.updates {
+            Some(check) if check.waiting.is_empty() => format!("Updates  {}", check.count()),
+            _ => "Updates".to_string(),
+        }
+    }
+
+    fn relabel_updates(&mut self) {
+        let label = self.updates_label();
+        let id = self.nav.iter().find(|id| self.nav.data::<Page>(*id) == Some(&Page::Updates));
+        if let Some(id) = id {
+            self.nav.text_set(id, label);
+        }
+    }
+
+    /// Ask every manager that can (or only `only`) what's outdated, in the
+    /// background; answers stream in.
+    fn check_updates(&mut self, only: Option<&str>) -> Task<Message> {
+        let Some(snapshot) = self.snapshot.clone() else { return Task::none() };
+        let checking: Vec<String> = outdated::checkable(&snapshot.detections, &snapshot.inventories)
+            .into_iter()
+            .map(|d| d.recipe.name.clone())
+            .filter(|m| only.is_none_or(|o| o == m))
+            .collect();
+        let check = self.updates.get_or_insert(UpdateCheck { results: Vec::new(), waiting: Vec::new() });
+        // Don't ask a manager twice at once.
+        let checking: Vec<String> = checking.into_iter().filter(|m| !check.waiting.contains(m)).collect();
+        check.results.retain(|c| !checking.contains(&c.manager));
+        check.waiting.extend(checking.iter().cloned());
+        self.relabel_updates();
+        if checking.is_empty() {
+            return Task::none();
+        }
+        let (tx, rx) = cosmic::iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            let detections: Vec<_> = snapshot.detections.iter().filter(|d| checking.contains(&d.recipe.name)).collect();
+            outdated::check_all(&detections, &snapshot.inventories, |checked| {
+                let _ = tx.unbounded_send(checked);
+            });
+        });
+        use cosmic::iced::futures::StreamExt;
+        cosmic::task::stream(rx.map(|checked| Message::UpdatesAnswer(Box::new(checked))))
+    }
+
+    /// What `pmm update` would run, per manager (or only `only`).
+    fn update_plan(&self, only: Option<&str>) -> Vec<(String, Vec<Step>)> {
+        let Some(snapshot) = &self.snapshot else { return Vec::new() };
+        update::plan(&snapshot.detections, &snapshot.inventories)
+            .into_iter()
+            .filter(|p| only.is_none_or(|o| o == p.manager))
+            .filter_map(|p| match p.plan {
+                Plan::Run(steps) => Some((p.manager, steps)),
+                Plan::Skip(_) => None,
+            })
+            .collect()
     }
 
     /// When uninstalling `key` would uninstall a manager (pipx is an apt
@@ -388,9 +474,10 @@ impl App {
             .is_some_and(|s| s.rows.iter().any(|r| r.manager == manager && dupe_key(&r.package.name) == key))
     }
 
-    /// A job for `name` with `manager` that hasn't finished.
+    /// A job for `name` with `manager` (`""`: the whole manager's update)
+    /// that hasn't finished.
     fn busy(&self, manager: &str, name: &str) -> bool {
-        self.jobs.iter().any(|j| j.state == State::Running && j.manager == manager && j.package == name)
+        self.jobs.iter().any(|j| matches!(j.state, State::Queued | State::Running) && j.manager == manager && j.package == name)
     }
 
     fn repositories<'a>(&'a self, snapshot: &'a Snapshot) -> Element<'a, Message> {
@@ -481,6 +568,135 @@ impl App {
         }
         if !empty.is_empty() {
             list = list.push(widget::text::caption(format!("No results: {}", empty.join(", "))));
+        }
+        widget::scrollable(list).height(Length::Fill).into()
+    }
+
+    fn updates_page<'a>(&'a self, snapshot: &'a Snapshot) -> Element<'a, Message> {
+        let spacing = cosmic::theme::spacing();
+        let Some(check) = &self.updates else {
+            return widget::container(widget::text::body("Checking for updates…")).center(Length::Fill).into();
+        };
+        let total = check.count();
+        let status = match (check.waiting.as_slice(), total) {
+            ([], 0) => "Everything pmm can check is up to date".to_string(),
+            ([], 1) => "1 update".to_string(),
+            ([], n) => format!("{n} updates"),
+            (waiting, n) => format!("{n} updates so far · waiting for {}…", waiting.join(", ")),
+        };
+        let plan = self.update_plan(None);
+        let updating = plan.iter().any(|(m, _)| self.busy(m, ""));
+        let header = widget::Row::new()
+            .push(widget::text::title4(status))
+            .push(widget::space::horizontal())
+            .push(widget::button::standard("Check again").on_press_maybe(check.waiting.is_empty().then_some(Message::CheckUpdates)))
+            .push(
+                widget::button::suggested("Update everything")
+                    .on_press_maybe((!plan.is_empty() && !updating).then_some(Message::UpdateManagers(None))),
+            )
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center);
+        let names: Vec<&str> = plan.iter().map(|(m, _)| m.as_str()).collect();
+        let mut list = widget::Column::new().push(header).spacing(spacing.space_s);
+        if !names.is_empty() {
+            list = list.push(widget::text::caption(format!(
+                "Update everything runs each manager's own update, one after another (like `pmm update`): {}. Ones that need root ask for your password.",
+                names.join(", ")
+            )));
+        }
+        if check.results.iter().any(|c| c.manager == "apt") || check.waiting.iter().any(|m| m == "apt") {
+            list = list.push(widget::text::caption(
+                "apt's list is as of its last refresh; updating apt refreshes it first, so it may find more.",
+            ));
+        }
+
+        let mut current = Vec::new();
+        for checked in &check.results {
+            let newer = match &checked.newer {
+                Ok(newer) if newer.is_empty() => {
+                    current.push(checked.manager.as_str());
+                    continue;
+                }
+                Ok(newer) => newer,
+                Err(e) => {
+                    list = list.push(widget::warning(format!("Couldn't check {}: {e}", checked.manager)));
+                    continue;
+                }
+            };
+            let manager = checked.manager.as_str();
+            let recipe = snapshot.detection(manager).map(|d| &d.recipe);
+            let can_upgrade = recipe.is_some_and(|r| r.upgrade_pkg.is_some());
+            let whole: Element<'a, Message> = if self.busy(manager, "") {
+                widget::text::caption("Updating…").into()
+            } else if names.contains(&manager) {
+                widget::button::standard(format!("Update all {manager}"))
+                    .on_press(Message::UpdateManagers(Some(manager.to_string())))
+                    .into()
+            } else {
+                widget::Space::new().into()
+            };
+            let mut group = widget::Column::new()
+                .push(
+                    widget::Row::new()
+                        .push(widget::text::heading(format!("{manager}  ·  {}", newer.len())))
+                        .push(widget::space::horizontal())
+                        .push(whole)
+                        .align_y(Alignment::Center),
+                )
+                .spacing(spacing.space_xxs);
+            for n in newer {
+                let key = Key { manager: manager.to_string(), name: n.name.clone(), version: n.version.clone() };
+                let action: Element<'a, Message> = if self.busy(manager, &n.name) {
+                    widget::text::caption("Upgrading…").into()
+                } else if self.busy(manager, "") {
+                    widget::text::caption("With the update").into()
+                } else if can_upgrade {
+                    widget::button::standard("Upgrade").on_press(Message::Run(Verb::Upgrade, key)).into()
+                } else {
+                    widget::text::caption("Update all only").into()
+                };
+                let latest = match (&n.version, &n.latest) {
+                    (Some(v), Some(l)) if v == l => "new build".to_string(),
+                    (_, Some(l)) => format!("→ {}", clip(l, 24)),
+                    (_, None) => "→ newer version".to_string(),
+                };
+                let cell = |content: Element<'a, Message>, portion: u16| {
+                    widget::container(content).width(Length::FillPortion(portion)).clip(true)
+                };
+                group = group.push(
+                    widget::Row::new()
+                        .push(cell(widget::text::body(n.name.as_str()).wrapping(Wrapping::None).into(), 6))
+                        .push(cell(
+                            widget::text::body(clip(n.version.as_deref().unwrap_or(""), 24)).wrapping(Wrapping::None).into(),
+                            3,
+                        ))
+                        .push(cell(
+                            widget::text::body(latest).class(cosmic::theme::Text::Accent).wrapping(Wrapping::None).into(),
+                            3,
+                        ))
+                        .push(widget::container(action).width(Length::Fixed(140.0)).align_x(Alignment::End))
+                        .spacing(spacing.space_s)
+                        .align_y(Alignment::Center),
+                );
+            }
+            list = list.push(widget::container(group).padding(spacing.space_s).class(cosmic::theme::Container::Card).width(Length::Fill));
+        }
+        if !current.is_empty() {
+            list = list.push(widget::text::caption(format!("Up to date: {}", current.join(", "))));
+        }
+        // Installed managers pmm can't ask (with something installed).
+        let unchecked: Vec<&str> = snapshot
+            .managers
+            .iter()
+            .filter(|m| m.count != Some(0))
+            .filter(|m| snapshot.detection(&m.name).is_some_and(|d| d.recipe.outdated.is_none()))
+            .map(|m| m.name.as_str())
+            .collect();
+        if !unchecked.is_empty() {
+            list = list.push(widget::text::caption(format!(
+                "pmm can't check {} for newer versions.",
+                unchecked.join(", ")
+            )));
         }
         widget::scrollable(list).height(Length::Fill).into()
     }
@@ -579,6 +795,7 @@ impl App {
     fn job_view<'a>(&'a self, job: &'a Job, lines: usize) -> Element<'a, Message> {
         let spacing = cosmic::theme::spacing();
         let (status, class) = match &job.state {
+            State::Queued => ("Waiting for the jobs before it…".to_string(), cosmic::theme::Text::Default),
             State::Running => ("Running…".to_string(), cosmic::theme::Text::Default),
             State::Done => ("Done".to_string(), cosmic::theme::Text::Accent),
             State::Failed(e) => (format!("Failed: {e}"), cosmic::theme::Text::Default),
@@ -602,7 +819,7 @@ impl App {
     fn activity(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         if self.jobs.is_empty() {
-            return widget::container(widget::text::body("Nothing run yet. Upgrades and uninstalls show up here, with their output."))
+            return widget::container(widget::text::body("Nothing run yet. Installs, upgrades, updates and uninstalls show up here, with their output."))
                 .center(Length::Fill)
                 .into();
         }
@@ -718,6 +935,8 @@ impl cosmic::Application for App {
             visible: Vec::new(),
             tab: Tab::Installed,
             remote: None,
+            updates: None,
+            queue: jobs::Queue::default(),
         };
         app.set_header_title("Package Manager Manager".into());
         let task = app.load(false);
@@ -731,6 +950,10 @@ impl cosmic::Application for App {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
         self.nav.activate(id);
         self.refilter();
+        // The first visit checks; after that, "Check again".
+        if self.page() == Page::Updates && self.updates.is_none() {
+            return self.check_updates(None);
+        }
         Task::none()
     }
 
@@ -821,14 +1044,45 @@ impl cosmic::Application for App {
                     search.expanded.push(manager);
                 }
             }
+            Message::CheckUpdates => return self.check_updates(None),
+            Message::UpdatesAnswer(checked) => {
+                if let Some(check) = self.updates.as_mut().filter(|c| c.waiting.contains(&checked.manager)) {
+                    check.waiting.retain(|m| *m != checked.manager);
+                    check.results.push(*checked);
+                    check.results.sort_by(|a, b| a.manager.cmp(&b.manager));
+                }
+                self.relabel_updates();
+            }
+            Message::UpdateManagers(only) => {
+                let mut tasks = Vec::new();
+                for (manager, steps) in self.update_plan(only.as_deref()) {
+                    if !self.busy(&manager, "") {
+                        tasks.push(self.queue_job(format!("Update {manager}"), steps, &manager, ""));
+                    }
+                }
+                return Task::batch(tasks);
+            }
             Message::Job(id, event) => {
                 let finished_ok = matches!(event, JobEvent::Finished(Ok(())));
-                if let Some(job) = self.jobs.get_mut(id) {
-                    job.apply(event);
-                }
+                let Some(job) = self.jobs.get_mut(id) else { return Task::none() };
+                job.apply(event);
                 if finished_ok {
+                    let (manager, package) = (job.manager.clone(), job.package.clone());
+                    let mut recheck = Task::none();
+                    if let Some(check) = self.updates.as_mut() {
+                        if package.is_empty() {
+                            recheck = self.check_updates(Some(&manager));
+                        } else {
+                            for c in check.results.iter_mut().filter(|c| c.manager == manager) {
+                                if let Ok(newer) = c.newer.as_mut() {
+                                    newer.retain(|n| n.name != package);
+                                }
+                            }
+                            self.relabel_updates();
+                        }
+                    }
                     // Re-read; the cache notices the change by itself.
-                    return self.load(false);
+                    return Task::batch([recheck, self.load(false)]);
                 }
             }
         }
@@ -885,8 +1139,10 @@ impl cosmic::Application for App {
                 .center(Length::Fill)
                 .into();
         };
-        if self.page() == Page::Activity {
-            return widget::container(self.activity()).padding(spacing.space_s).into();
+        match self.page() {
+            Page::Activity => return widget::container(self.activity()).padding(spacing.space_s).into(),
+            Page::Updates => return widget::container(self.updates_page(snapshot)).padding(spacing.space_s).into(),
+            _ => {}
         }
 
         let search = widget::text_input::search_input("Search packages · Enter also searches repositories", &self.query)

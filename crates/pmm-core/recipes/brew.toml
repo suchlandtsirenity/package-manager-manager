@@ -43,3 +43,8 @@ command = ["brew", "uninstall", "{package}"]
 
 [upgrade_pkg]
 command = ["brew", "upgrade", "{package}"]
+
+[outdated]
+# "openssl@3 (3.6.5) < 3.6.6"; several installed versions are comma-separated.
+command = ["brew", "outdated", "--verbose"]
+pattern = '^(?P<name>\S+) \((?P<version>[^)]*)\) (?:<|!=) (?P<latest>\S+)'

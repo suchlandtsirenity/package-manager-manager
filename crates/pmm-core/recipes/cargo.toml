@@ -55,3 +55,8 @@ command = ["cargo", "uninstall", "{package}"]
 [upgrade_pkg]
 # Reinstalls only if a newer version exists.
 command = ["cargo", "install", "{package}"]
+
+[outdated]
+# cargo has no "outdated": ask crates.io about each crates.io package.
+command = ["sh", "-c", "cargo install --list | sed -n 's/^\\([^ ]*\\) v\\([^ ]*\\):$/\\1 \\2/p' | while read -r n v; do l=$(cargo search \"$n\" --limit 1 | sed -n \"s/^$n = \\\"\\([^\\\"]*\\)\\\".*/\\1/p\"); [ -n \"$l\" ] && [ \"$l\" != \"$v\" ] && printf '%s\\t%s\\t%s\\n' \"$n\" \"$v\" \"$l\"; done; true"]
+pattern = '^(?P<name>[^\t]+)\t(?P<version>[^\t]+)\t(?P<latest>[^\t]+)$'

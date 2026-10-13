@@ -50,3 +50,9 @@ unattended = ["-y"]
 [upgrade_pkg]
 command = ["apt-get", "install", "--only-upgrade", "-y", "{package}"]
 sudo = true
+
+[outdated]
+# A dry run of what `pmm update` runs, as of the last `apt update`. New
+# packages an upgrade pulls in have no "[installed version]" and are skipped.
+command = ["apt-get", "-s", "--with-new-pkgs", "upgrade"]
+pattern = '^Inst (?P<name>\S+) \[(?P<version>[^\]]+)\] \((?P<latest>\S+)'

@@ -82,3 +82,8 @@ command = ["uv", "tool", "uninstall", "{package}"]
 
 [upgrade_pkg]
 command = ["uv", "tool", "upgrade", "{package}"]
+
+[outdated]
+# "ruff v0.5.0 [latest: 0.6.1]"
+command = ["uv", "tool", "list", "--outdated"]
+pattern = '^(?P<name>[^\s-]\S*) v(?P<version>\S+) \[latest: (?P<latest>[^\]]+)\]'
