@@ -17,3 +17,15 @@ glob = ["/home/linuxbrew/.linuxbrew/Cellar/{package}/*/bin/*", "/home/linuxbrew/
 
 [update]
 commands = [["brew", "update"], ["brew", "upgrade"]]
+
+[[install]]
+name = "official"
+commands = [["bash", "-c", "NONINTERACTIVE=1 bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""]]
+# The uninstaller removes every formula and cask along with brew.
+uninstall = [["bash", "-c", "NONINTERACTIVE=1 bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)\""]]
+
+[remove]
+note = "Delete the `brew shellenv` line from ~/.bashrc (or ~/.profile)."
+
+[install_pkg]
+command = ["brew", "install", "{package}"]

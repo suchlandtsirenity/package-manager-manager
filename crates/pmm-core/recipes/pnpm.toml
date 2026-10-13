@@ -13,3 +13,29 @@ watch = ["~/.local/share/pnpm/global/*/package.json"]
 
 [update]
 commands = [["pnpm", "update", "-g"]]
+
+[[install]]
+name = "npm"
+manager = "npm"
+commands = [["npm", "install", "-g", "pnpm"]]
+uninstall = [["npm", "uninstall", "-g", "pnpm"]]
+
+[[install]]
+name = "official"
+commands = [["sh", "-c", "curl -fsSL https://get.pnpm.io/install.sh | sh -"]]
+# The standalone pnpm lives in ~/.local/share/pnpm, deleted below.
+uninstall = []
+
+[[install]]
+name = "brew"
+manager = "brew"
+commands = [["brew", "install", "pnpm"]]
+uninstall = [["brew", "uninstall", "pnpm"]]
+
+[remove]
+# Global packages and the package store.
+paths = ["~/.local/share/pnpm"]
+note = "Delete the PNPM_HOME lines from ~/.bashrc, if the installer added them."
+
+[install_pkg]
+command = ["pnpm", "add", "-g", "{package}"]

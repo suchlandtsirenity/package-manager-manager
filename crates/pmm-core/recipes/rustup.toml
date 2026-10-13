@@ -17,3 +17,13 @@ watch = ["~/.rustup/toolchains"]
 
 [update]
 commands = [["rustup", "update"]]
+
+[[install]]
+name = "official"
+commands = [["sh", "-c", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"]]
+# Removes every toolchain and everything `cargo install`ed (~/.cargo, ~/.rustup)
+# and its own lines in shell profiles.
+uninstall = [["rustup", "self", "uninstall", "-y"]]
+
+[install_pkg]
+command = ["rustup", "toolchain", "install", "{package}"]

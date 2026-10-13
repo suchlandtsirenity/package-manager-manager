@@ -18,3 +18,17 @@ glob = ["/var/lib/flatpak/exports/bin/{package}", "~/.local/share/flatpak/export
 [update]
 # Updates both user and system installs; flatpak asks polkit itself when needed.
 commands = [["flatpak", "update", "-y"]]
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "flatpak"]]
+sudo = true
+uninstall = [["apt-get", "remove", "flatpak"]]
+
+[remove]
+commands = [["flatpak", "uninstall", "--all", "-y"]]
+note = "App data in ~/.var/app is kept; delete it yourself if you don't want it."
+
+[install_pkg]
+command = ["flatpak", "install", "-y", "flathub", "{package}"]

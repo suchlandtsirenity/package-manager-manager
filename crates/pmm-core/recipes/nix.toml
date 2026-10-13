@@ -14,3 +14,9 @@ watch = ["~/.nix-profile", "~/.local/state/nix/profiles"]
 [update]
 # New-style profiles (manifest.json) use `nix profile`; old ones nix-env and channels.
 commands = [["sh", "-c", "if [ -e \"$HOME/.nix-profile/manifest.json\" ]; then nix --extra-experimental-features 'nix-command flakes' profile upgrade --all; else nix-channel --update && nix-env -u; fi"]]
+
+# Removing nix isn't automated: a multi-user install touches systemd, /etc
+# and build users. See https://nix.dev/manual/nix/latest/installation/uninstall
+[[install]]
+name = "official"
+commands = [["sh", "-c", "curl -fsSL https://nixos.org/nix/install | sh -s -- --daemon"]]

@@ -24,3 +24,7 @@ pattern = '^/(?:usr/)?(?:s?bin|games)/(?P<name>[^/]+)$'
 # --with-new-pkgs lets upgrades pull in new dependencies, like `apt upgrade`.
 commands = [["apt-get", "update"], ["apt-get", "-y", "--with-new-pkgs", "upgrade"]]
 sudo = true
+
+[install_pkg]
+command = ["apt-get", "install", "-y", "{package}"]
+sudo = true

@@ -19,3 +19,18 @@ glob = ["/snap/bin/{package}", "/snap/bin/{package}.*"]
 [update]
 commands = [["snap", "refresh"]]
 sudo = true
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "snapd"]]
+sudo = true
+# Purging snapd removes every snap with it.
+uninstall = [["apt-get", "purge", "snapd"]]
+
+[remove]
+note = "Snap app data in ~/snap is kept; delete it yourself if you don't want it."
+
+[install_pkg]
+command = ["snap", "install", "{package}"]
+sudo = true

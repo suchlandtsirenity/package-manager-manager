@@ -45,14 +45,13 @@ A recipe declares:
 | `detect` | binary name(s) to look for in PATH, or a path to check |
 | `list` | command + parser (`lines` with a regex, `json`, or a named built-in parser) |
 | `update` | `commands` run in order to update everything; `sudo = true` if they need root (pmm adds `sudo`/`pkexec` itself) |
-| `install` | one or more named install methods; first is the default |
-| `remove` | command(s) to uninstall the manager itself, plus paths it leaves behind |
-| `requires` | other managers it depends on (e.g. pnpm → npm, go via brew) |
+| `[[install]]` | named install methods, first is the default: `commands`, `sudo`, `manager` (the manager it installs through, e.g. go's `brew` method), `uninstall` (missing = can't be removed this way; `[]` = nothing to run) |
+| `remove` | `commands` to remove its packages (when uninstalling the manager doesn't), `paths` to delete afterwards (inside `~` only), `note` for cleanup left to the user |
 | `protected` | if true, pmm refuses to remove it (apt, dpkg) |
 | `binaries` | the commands a package provides (`glob`, `command` + `pattern`, or `builtin`), for showing which copy of a duplicate runs |
 | `search_remote` | search the manager's repository/registry for packages not installed |
 | `info` | details for one package (description, version, homepage) |
-| `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions, with `needs_sudo` |
+| `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions (`command` with `{package}` and/or `{version}`, `sudo`); `install_pkg` exists from step 5, for `restore` |
 
 Any field can be missing; pmm then just doesn't offer that action for that manager.
 Known gap: PyPI has no search API, so pip/uv/pipx support exact-name lookup only.
@@ -66,18 +65,29 @@ built-in parser written in Rust.
 ### Managing managers
 - `pmm managers` — every known recipe, marked installed / not installed, with how it
   was installed (e.g. `go  installed  via brew`).
-- `pmm add <manager> [--via <method>] [--dry-run]` — install a manager using the
-  recipe's default method, or the one named with `--via`. Installs any missing
-  `requires` first, after asking.
+- `pmm add <manager> [--via <method>] [--dry-run] [--yes]` — install a manager using
+  the recipe's default method, or the one named with `--via`. If the method goes
+  through a manager that isn't installed, that one is added first, after asking.
+  Says so if the new manager isn't on PATH until a new shell.
 - `pmm remove <manager> [--dry-run] [--yes]` —
-  1. Refuse if `protected`.
-  2. Show what goes with it: its packages, plus managers that depend on it
-     (`remove brew` → go would also go).
-  3. Save a manifest of its packages to `~/.local/share/pmm/removed/<manager>-<date>.toml`.
-  4. Confirm (skipped with `--yes`).
-  5. Remove its packages, then the manager itself.
-- `pmm restore <manifest> [--via <manager>]` — reinstall packages from a saved
-  manifest, with the same manager or another one.
+  1. Refuse if `protected`, or if pmm can't tell how to undo the way it was
+     installed: the `[[install]]` method whose `manager` matches detection's
+     "via" (or the first without one, for standalone installs). A manager that
+     came with another (cargo with rustup, npm with nvm) points at that one.
+  2. Show what goes with it: its packages (read fresh, not cached), managers
+     installed through it that stop working (`remove brew` → go), the commands,
+     the paths to delete and the recipe's `note`.
+  3. Confirm (skipped with `--yes`; without a terminal, `--yes` is required).
+  4. Save a manifest of its packages and its dependents' to
+     `~/.local/share/pmm/removed/<manager>-<date>.toml` (never overwritten).
+     If any of those lists can't be read, nothing is removed.
+  5. Run `[remove] commands`, then the method's `uninstall`, then delete `paths`.
+- `pmm restore [<manifest>] [--via <manager>] [--dry-run]` — reinstall packages
+  from a saved manifest (name or path), with the same managers or another one.
+  Skips what's already installed; keeps going past failures. Without a
+  manifest, lists the saved ones.
+- add/remove/restore run commands attached to the terminal, so installers and
+  apt can ask their own questions (apt shows what else a removal takes with it).
 
 ### Inventory
 - `pmm list [--manager <name>]` — counts per manager, or full list for one.
@@ -159,11 +169,11 @@ Same features as the CLI, laid out for browsing:
 
 ## Build order
 
-1. Recipe format + loader, detection, `pmm managers`.
-2. `list` + `search` with cache (apt, cargo, brew, npm first, then the rest).
-3. `dupes` + `status`.
-4. `update` (with `--dry-run`).
-5. `add` / `remove` / `restore` (with `--dry-run`), dependency warnings.
+1. Recipe format + loader, detection, `pmm managers`. ✅
+2. `list` + `search` with cache (apt, cargo, brew, npm first, then the rest). ✅
+3. `dupes` + `status`. ✅
+4. `update` (with `--dry-run`). ✅
+5. `add` / `remove` / `restore` (with `--dry-run`), dependency warnings. ✅
 6. Per-package management: remote results in `search`, `info`, `install`,
    `uninstall`, `upgrade`.
 7. `pmm-gui`: Installed view first, then Browse, Updates, managers.

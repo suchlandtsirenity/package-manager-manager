@@ -32,6 +32,15 @@ pub struct Recipe {
     /// How to update everything it has installed. Missing means pmm can't.
     #[serde(default)]
     pub update: Option<Update>,
+    /// Ways to install the manager itself; the first is the default.
+    #[serde(default)]
+    pub install: Vec<Install>,
+    /// What to do, besides uninstalling the manager, when it's removed.
+    #[serde(default)]
+    pub remove: Option<Remove>,
+    /// How to install one package. Used by `pmm restore`.
+    #[serde(default)]
+    pub install_pkg: Option<PackageAction>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -110,6 +119,61 @@ pub struct Update {
     pub sudo: bool,
 }
 
+/// One way to install a manager, e.g. with its official script or through
+/// another manager.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Install {
+    /// What `pmm add --via` calls it: the other manager's name, or e.g.
+    /// "official" for the project's own installer.
+    pub name: String,
+    /// The manager this method installs through, which must be installed
+    /// first. Also how pmm matches an installed manager to the method that
+    /// put it there (detection says "go via brew"); a method without one
+    /// matches managers that were installed standalone.
+    #[serde(default)]
+    pub manager: Option<String>,
+    pub commands: Vec<Vec<String>>,
+    #[serde(default)]
+    pub sudo: bool,
+    /// Commands that undo this method. Missing means pmm can't remove a
+    /// manager installed this way; `[]` means there's nothing to run besides
+    /// the recipe's `[remove]`.
+    #[serde(default)]
+    pub uninstall: Option<Vec<Vec<String>>>,
+}
+
+/// Removing a manager: first `commands` (remove its packages, if
+/// uninstalling the manager doesn't), then the install method's
+/// `uninstall`, then `paths` are deleted.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Remove {
+    #[serde(default)]
+    pub commands: Vec<Vec<String>>,
+    #[serde(default)]
+    pub sudo: bool,
+    /// Files or folders it leaves behind, inside the home folder only
+    /// (`~/...`; no `*` or `..`).
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// Shown with the plan: cleanup pmm leaves to you, like lines an
+    /// installer added to `~/.bashrc`.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// A command acting on one package; `{package}` is replaced by its name and
+/// `{version}` by its version (for managers like nvm, whose packages are all
+/// called "node").
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PackageAction {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub sudo: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Source {
     #[default]
@@ -147,23 +211,67 @@ pub fn parse(text: &str) -> Result<Recipe> {
         check_binaries(binaries)?;
     }
     if let Some(update) = &recipe.update {
-        check_update(update)?;
+        if update.commands.is_empty() {
+            bail!("[update] commands is empty");
+        }
+        check_commands("[update]", &update.commands)?;
+    }
+    check_install(&recipe.install)?;
+    if let Some(remove) = &recipe.remove {
+        check_commands("[remove]", &remove.commands)?;
+        for path in &remove.paths {
+            check_home_path(path)?;
+        }
+    }
+    if let Some(action) = &recipe.install_pkg {
+        check_commands("[install_pkg]", std::slice::from_ref(&action.command))?;
+        if !action.command.iter().any(|a| a.contains("{package}") || a.contains("{version}")) {
+            bail!("[install_pkg] command needs {{package}} or {{version}}");
+        }
     }
     Ok(recipe)
 }
 
-fn check_update(update: &Update) -> Result<()> {
-    if update.commands.is_empty() {
-        bail!("[update] commands is empty");
-    }
-    for command in &update.commands {
+fn check_commands(section: &str, commands: &[Vec<String>]) -> Result<()> {
+    for command in commands {
         match command.first().map(String::as_str) {
-            None => bail!("[update] has an empty command"),
+            None => bail!("{section} has an empty command"),
             Some("sudo" | "pkexec" | "doas") => {
-                bail!("[update] set `sudo = true` instead of starting a command with {}", command[0])
+                bail!("{section} set `sudo = true` instead of starting a command with {}", command[0])
             }
             Some(_) => {}
         }
+    }
+    Ok(())
+}
+
+fn check_install(methods: &[Install]) -> Result<()> {
+    for (i, method) in methods.iter().enumerate() {
+        let section = format!("[[install]] {:?}", method.name);
+        if method.name.is_empty() {
+            bail!("[[install]] needs a name");
+        }
+        if methods[..i].iter().any(|m| m.name == method.name) {
+            bail!("{section} is listed twice");
+        }
+        if method.commands.is_empty() {
+            bail!("{section} commands is empty");
+        }
+        check_commands(&section, &method.commands)?;
+        if let Some(uninstall) = &method.uninstall {
+            check_commands(&section, uninstall)?;
+        }
+    }
+    Ok(())
+}
+
+/// `[remove] paths` are deleted without asking twice, so they're limited to
+/// things that can only ever mean a folder inside home.
+fn check_home_path(path: &str) -> Result<()> {
+    let rest = path.strip_prefix("~/").unwrap_or("");
+    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() || parts.iter().any(|p| *p == ".." || *p == "." || p.contains('*')) {
+        bail!("[remove] path {path:?} must be inside the home folder (\"~/...\", no `*`, `.` or `..`)");
     }
     Ok(())
 }
@@ -345,6 +453,27 @@ mod tests {
         assert!(parse(&format!("{base}commands = [[]]\n")).is_err());
         let sudo = parse(&format!("{base}commands = [[\"sudo\", \"x\"]]\n")).unwrap_err();
         assert!(sudo.to_string().contains("sudo = true"), "{sudo}");
+    }
+
+    #[test]
+    fn install_and_remove_are_checked() {
+        let base = "name = \"x\"\ndescription = \"x\"\n[detect]\nbinary = \"x\"\n";
+        let ok = format!(
+            "{base}[[install]]\nname = \"brew\"\nmanager = \"brew\"\ncommands = [[\"brew\", \"install\", \"x\"]]\nuninstall = []\n\
+             [remove]\npaths = [\"~/.x\", \"~/.local/share/x\"]\n\
+             [install_pkg]\ncommand = [\"x\", \"add\", \"{{package}}\"]\n"
+        );
+        let recipe = parse(&ok).unwrap();
+        assert_eq!(recipe.install[0].uninstall, Some(vec![]));
+
+        let twice = format!("{base}[[install]]\nname = \"a\"\ncommands = [[\"a\"]]\n[[install]]\nname = \"a\"\ncommands = [[\"b\"]]\n");
+        assert!(parse(&twice).unwrap_err().to_string().contains("twice"));
+        for bad in ["/usr", "~", "~/", "~/../x", "~/a/*/b", "~/./x", ".x"] {
+            let text = format!("{base}[remove]\npaths = [\"{bad}\"]\n");
+            assert!(parse(&text).is_err(), "{bad} should be refused");
+        }
+        let no_placeholder = format!("{base}[install_pkg]\ncommand = [\"x\", \"add\"]\n");
+        assert!(parse(&no_placeholder).is_err());
     }
 
     #[test]

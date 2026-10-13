@@ -1,12 +1,15 @@
 //! pmm-core: everything pmm knows and does. The CLI and GUI are thin layers
 //! over this crate.
 
+pub mod action;
 pub mod binaries;
 mod builtins;
 pub mod cache;
 pub mod detect;
 pub mod dupes;
 pub mod inventory;
+pub mod manage;
+pub mod manifest;
 pub mod paths;
 pub mod process;
 pub mod recipe;

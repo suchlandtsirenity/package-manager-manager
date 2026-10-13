@@ -18,3 +18,30 @@ builtin = "uv-tools"
 
 [update]
 commands = [["uv", "tool", "upgrade", "--all"]]
+
+[[install]]
+name = "official"
+commands = [["sh", "-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"]]
+# Following uv's own uninstall steps: clear the cache, then delete the
+# binaries and data (below).
+uninstall = [["uv", "cache", "clean"]]
+
+[[install]]
+name = "brew"
+manager = "brew"
+commands = [["brew", "install", "uv"]]
+uninstall = [["brew", "uninstall", "uv"]]
+
+[[install]]
+name = "pipx"
+manager = "pipx"
+commands = [["pipx", "install", "uv"]]
+uninstall = [["pipx", "uninstall", "uv"]]
+
+[remove]
+commands = [["uv", "tool", "uninstall", "--all"]]
+# Its tools, the Pythons it installed, and (for the official installer) itself.
+paths = ["~/.local/share/uv", "~/.local/bin/uv", "~/.local/bin/uvx"]
+
+[install_pkg]
+command = ["uv", "tool", "install", "{package}"]

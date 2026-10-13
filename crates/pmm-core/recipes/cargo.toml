@@ -21,3 +21,23 @@ builtin = "cargo-bins"
 # reinstall each crates.io package, which cargo skips when it's up to date.
 # Packages installed from a path or git (with a "(…)" after the version) are left alone.
 commands = [["sh", "-c", "if command -v cargo-install-update >/dev/null; then cargo install-update -a; else cargo install --list | sed -n 's/^\\([^ ]*\\) v[^ ]*:$/\\1/p' | xargs -r -n1 cargo install; fi"]]
+
+# cargo comes with rustup's toolchains; `pmm remove rustup` removes both.
+[[install]]
+name = "rustup"
+manager = "rustup"
+commands = [["rustup", "default", "stable"]]
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "cargo"]]
+sudo = true
+uninstall = [["apt-get", "remove", "cargo"]]
+
+[remove]
+# Every installed crate, including ones from a path or git.
+commands = [["sh", "-c", "cargo install --list | sed -n 's/^\\([^ ]*\\) v.*:$/\\1/p' | xargs -r cargo uninstall"]]
+
+[install_pkg]
+command = ["cargo", "install", "{package}"]

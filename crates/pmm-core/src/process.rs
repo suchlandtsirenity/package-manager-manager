@@ -124,6 +124,17 @@ pub fn stream(cmd: &[String], mut on_line: impl FnMut(&str)) -> Result<ExitStatu
     Ok(child.wait()?)
 }
 
+/// Run `cmd` with no time limit, attached to the terminal, so it can show
+/// its own progress and ask its own questions.
+pub fn interactive(cmd: &[String]) -> Result<ExitStatus> {
+    let (program, args) = cmd.split_first().context("empty command")?;
+    Command::new(program)
+        .args(args)
+        .env("HOMEBREW_NO_ENV_HINTS", "1")
+        .status()
+        .with_context(|| format!("can't run {program}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

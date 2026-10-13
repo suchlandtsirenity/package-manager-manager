@@ -18,3 +18,24 @@ builtin = "npm-bins"
 [update]
 # Only the active Node version's globals (under nvm, each version has its own).
 commands = [["npm", "update", "-g"]]
+
+# Under nvm, npm comes with each Node version; `pmm remove nvm` removes both.
+[[install]]
+name = "nvm"
+manager = "nvm"
+commands = [["bash", "-c", ". \"$HOME/.nvm/nvm.sh\" && nvm install --lts"]]
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "npm"]]
+sudo = true
+uninstall = [["apt-get", "remove", "npm"]]
+
+[remove]
+# Global packages of the system Node (in /usr/local, hence sudo), except npm itself.
+commands = [["sh", "-c", "npm ls -g --depth=0 --parseable | tail -n +2 | sed 's|.*/node_modules/||' | grep -vxE 'npm|corepack' | xargs -r npm uninstall -g"]]
+sudo = true
+
+[install_pkg]
+command = ["npm", "install", "-g", "{package}"]

@@ -21,3 +21,20 @@ builtin = "pip-scripts"
 
 # No [update]: pip has no "upgrade all", and upgrading every package blindly
 # breaks ones that pin each other's versions.
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "python3-pip"]]
+sudo = true
+uninstall = [["apt-get", "remove", "python3-pip"]]
+
+[remove]
+# The current Python's user packages. Ones for other Python versions (left
+# over from an OS upgrade) can't be uninstalled with this pip; they're still
+# in the saved list.
+commands = [["sh", "-c", "python3 -m pip freeze --user | sed 's/[=@ ].*//' | xargs -r python3 -m pip uninstall -y --break-system-packages"]]
+note = "Packages for other Python versions and in /usr/local stay; `pmm list -m pip` shows them."
+
+# No [install_pkg]: Ubuntu blocks `pip install` outside a venv (PEP 668).
+# Restore pip packages with `pmm restore <list> --via pipx` (or uv).

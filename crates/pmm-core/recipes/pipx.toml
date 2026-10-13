@@ -17,3 +17,22 @@ builtin = "pipx-apps"
 
 [update]
 commands = [["pipx", "upgrade-all"]]
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "pipx"]]
+sudo = true
+uninstall = [["apt-get", "remove", "pipx"]]
+
+[[install]]
+name = "brew"
+manager = "brew"
+commands = [["brew", "install", "pipx"]]
+uninstall = [["brew", "uninstall", "pipx"]]
+
+[remove]
+commands = [["pipx", "uninstall-all"]]
+
+[install_pkg]
+command = ["pipx", "install", "{package}"]

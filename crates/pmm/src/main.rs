@@ -9,7 +9,10 @@ use pmm_core::{
     Cache, Detection, Env, Inventory, Owners, Rank, Source, Status, Via, cache, detect_all,
     list_all, package_dupes, recipe, search, shadowed_commands, update, which_runs,
 };
-use pmm_core::update::{Event, Plan};
+use pmm_core::action::{self, Event, Io, Step};
+use pmm_core::manage::{self, Restore};
+use pmm_core::update::Plan;
+use pmm_core::{Recipe, manifest};
 
 /// pmm — the package manager manager.
 #[derive(Parser)]
@@ -63,6 +66,42 @@ enum Cmd {
         #[arg(short, long)]
         manager: Option<String>,
         /// Show what would run, without running it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Install a package manager (and any manager it's installed through).
+    Add {
+        manager: String,
+        /// How to install it: another manager's name, or e.g. "official".
+        #[arg(long)]
+        via: Option<String>,
+        /// Show what would run, without running it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Don't ask before installing other managers it needs.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Remove a package manager and everything it installed. A list of its
+    /// packages is saved first, for `pmm restore`.
+    Remove {
+        manager: String,
+        /// Show what would be removed, without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Don't ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Reinstall the packages of a removed manager. Without a list, shows
+    /// the saved ones.
+    Restore {
+        /// A saved list: its name (e.g. pipx-2026-10-13) or path.
+        list: Option<String>,
+        /// Install them with this manager instead of the one they came from.
+        #[arg(long)]
+        via: Option<String>,
+        /// Show what would be installed, without installing anything.
         #[arg(long)]
         dry_run: bool,
     },
@@ -124,6 +163,22 @@ fn main() -> ExitCode {
                 let inventories = list_all(&d, &env, &cache, false);
                 update_all(&d, &inventories, dry_run)
             })
+        }
+        Cmd::Add { manager, via, dry_run, yes } => {
+            add(&manager, via.as_deref(), dry_run, yes, &loaded.recipes, &env)
+        }
+        Cmd::Remove { manager, dry_run, yes } => {
+            remove(&manager, dry_run, yes, &detect_all(&loaded.recipes, &env, false), &env, &cache)
+        }
+        Cmd::Restore { list, via, dry_run } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            match list {
+                None => {
+                    saved_lists(&env);
+                    Ok(())
+                }
+                Some(list) => restore(&list, via.as_deref(), dry_run, &detections, &env, &cache),
+            }
         }
     };
     match result {
@@ -549,6 +604,55 @@ fn status(detections: &[Detection], inventories: &[Inventory], env: &Env, cache:
 /// How the CLI gets root for steps that need it.
 const ELEVATE: &str = "sudo";
 
+/// Ask for the sudo password once, up front, if any of `who` (the things
+/// needing it) is non-empty, rather than in the middle of other output.
+fn get_sudo(who: &[&str]) -> bool {
+    if who.is_empty() {
+        return true;
+    }
+    println!("\n{} {} sudo.", who.join(" and "), if who.len() == 1 { "needs" } else { "need" });
+    std::process::Command::new(ELEVATE).arg("-v").status().is_ok_and(|s| s.success())
+}
+
+/// Ask a yes/no question (no by default). Without a terminal nobody can
+/// answer, so that's an error pointing at `--yes`.
+fn confirm(question: &str) -> Result<(), Failure> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(Failure::Message(format!("{question} needs an answer: run it in a terminal, or pass --yes")));
+    }
+    print!("\n{question} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    match answer.trim().to_lowercase().as_str() {
+        "y" | "yes" => Ok(()),
+        _ => Err(Failure::Message("cancelled; nothing was changed".into())),
+    }
+}
+
+/// Print the commands of a plan, indented under `label` (blank after the first).
+fn print_steps(label: &str, width: usize, steps: &[Step]) {
+    for (i, step) in steps.iter().enumerate() {
+        let label = if i == 0 { label } else { "" };
+        println!("  {label:<width$}  {}", step.shown(ELEVATE));
+    }
+}
+
+/// Run steps attached to the terminal, announcing each command.
+fn run_in_terminal(steps: &[Step]) -> Result<Duration, action::Failed> {
+    action::run(steps, ELEVATE, Io::Terminal, |event| {
+        if let Event::Step(step) = event {
+            let line = format!("$ {}", step.shown(ELEVATE));
+            println!("{}", line.if_supports_color(Stdout, |l| l.cyan()));
+        }
+    })
+}
+
+fn section(title: &str) {
+    println!("\n{}", format!("── {title} ").if_supports_color(Stdout, |t| t.bold()));
+}
+
 /// "8s", "2m 05s".
 fn took(d: Duration) -> String {
     let secs = d.as_secs();
@@ -557,13 +661,13 @@ fn took(d: Duration) -> String {
 
 enum Outcome {
     Updated(Duration),
-    Failed(update::Failed),
+    Failed(action::Failed),
     NoSudo,
 }
 
 fn update_all(detections: &[Detection], inventories: &[Inventory], dry_run: bool) -> Result<(), Failure> {
     let planned = update::plan(detections, inventories);
-    let to_run: Vec<(&str, &[update::Step], bool)> = planned
+    let to_run: Vec<(&str, &[Step], bool)> = planned
         .iter()
         .filter_map(|p| match &p.plan {
             Plan::Run(steps) => Some((p.manager.as_str(), steps.as_slice(), p.needs_sudo())),
@@ -578,10 +682,7 @@ fn update_all(detections: &[Detection], inventories: &[Inventory], dry_run: bool
     } else {
         heading(&format!("{} to update\n", count(to_run.len(), "managers")));
         for (manager, steps, _) in &to_run {
-            for (i, step) in steps.iter().enumerate() {
-                let name = if i == 0 { *manager } else { "" };
-                println!("  {name:<width$}  {}", step.shown(ELEVATE));
-            }
+            print_steps(manager, width, steps);
         }
     }
     let skipped: Vec<(&str, update::Skip)> = planned
@@ -609,21 +710,17 @@ fn update_all(detections: &[Detection], inventories: &[Inventory], dry_run: bool
     // Ask for the password once, up front, rather than in the middle of
     // another manager's output. If it's refused, the rest still runs.
     let needs_sudo: Vec<&str> = to_run.iter().filter(|(_, _, sudo)| *sudo).map(|(m, _, _)| *m).collect();
-    let have_sudo = needs_sudo.is_empty() || {
-        println!("\n{} {} sudo.", needs_sudo.join(" and "), if needs_sudo.len() == 1 { "needs" } else { "need" });
-        std::process::Command::new(ELEVATE).arg("-v").status().is_ok_and(|s| s.success())
-    };
+    let have_sudo = get_sudo(&needs_sudo);
 
     let mut outcomes: Vec<(&str, Outcome)> = Vec::new();
     for (i, (manager, steps, sudo)) in to_run.iter().enumerate() {
-        let title = format!("── {manager} ({}/{}) ", i + 1, to_run.len());
-        println!("\n{}", title.if_supports_color(Stdout, |t| t.bold()));
+        section(&format!("{manager} ({}/{})", i + 1, to_run.len()));
         if *sudo && !have_sudo {
             println!("{}", "skipped: sudo wasn't given".if_supports_color(Stdout, |t| t.yellow()));
             outcomes.push((manager, Outcome::NoSudo));
             continue;
         }
-        let result = update::run(steps, ELEVATE, |event| match event {
+        let result = action::run(steps, ELEVATE, Io::Stream, |event| match event {
             Event::Step(step) => {
                 let line = format!("$ {}", step.shown(ELEVATE));
                 println!("{}", line.if_supports_color(Stdout, |l| l.cyan()));
@@ -659,5 +756,313 @@ fn update_all(detections: &[Detection], inventories: &[Inventory], dry_run: bool
     match failed.as_slice() {
         [] => Ok(()),
         _ => Err(Failure::Message(format!("couldn't update {}", failed.join(", ")))),
+    }
+}
+
+fn add(name: &str, via: Option<&str>, dry_run: bool, yes: bool, recipes: &[Recipe], env: &Env) -> Result<(), Failure> {
+    let detections = detect_all(recipes, env, false);
+    if detections.iter().any(|d| d.recipe.name == name && d.is_installed()) {
+        println!("{name} is already installed.");
+        return Ok(());
+    }
+    let plan = manage::plan_add(name, via, &detections).map_err(Failure::Message)?;
+    let width = plan.iter().map(|a| a.manager.len()).max().unwrap_or(0);
+    heading(&format!("Installing {name}\n"));
+    for a in &plan {
+        print_steps(&a.manager, width, &a.steps);
+    }
+    let first: Vec<&str> = plan[..plan.len() - 1].iter().map(|a| a.manager.as_str()).collect();
+    if !first.is_empty() {
+        println!(
+            "\n{name} is installed via {}, which isn't installed yet, so that comes first.",
+            first.join(" and ")
+        );
+    }
+    if dry_run {
+        println!("\nDry run: nothing was changed.");
+        return Ok(());
+    }
+    if !first.is_empty() && !yes {
+        confirm(&format!("Install {} too?", first.join(" and ")))?;
+    }
+    let sudo: Vec<&str> = plan
+        .iter()
+        .filter(|a| a.steps.iter().any(|s| s.sudo))
+        .map(|a| a.manager.as_str())
+        .collect();
+    if !get_sudo(&sudo) {
+        return Err(Failure::Message("sudo wasn't given; nothing was changed".into()));
+    }
+
+    for a in &plan {
+        section(&format!("installing {} via {}", a.manager, a.method));
+        if let Err(f) = run_in_terminal(&a.steps) {
+            return Err(Failure::Message(format!("`{}` {}; {} wasn't installed", f.step.shown(ELEVATE), f.reason, a.manager)));
+        }
+    }
+
+    // A new manager is often only on PATH in a new shell (rustup, brew).
+    let after = detect_all(recipes, env, false);
+    println!();
+    for a in &plan {
+        if after.iter().any(|d| d.recipe.name == a.manager && d.is_installed()) {
+            println!("{}", format!("✓ {} installed", a.manager).if_supports_color(Stdout, |l| l.green()));
+        } else {
+            println!(
+                "{}",
+                format!(
+                    "✓ {} installed, but isn't on PATH yet: open a new terminal, or follow its instructions above",
+                    a.manager
+                )
+                .if_supports_color(Stdout, |l| l.yellow())
+            );
+        }
+    }
+    Ok(())
+}
+
+fn remove(name: &str, dry_run: bool, yes: bool, detections: &[Detection], env: &Env, cache: &Cache) -> Result<(), Failure> {
+    let plan = manage::plan_remove(name, detections, env).map_err(Failure::Message)?;
+
+    // Its packages and those of managers installed through it, read fresh:
+    // this list is what `pmm restore` will have to go on.
+    let involved: Vec<Detection> = detections
+        .iter()
+        .filter(|d| d.recipe.name == name || plan.dependents.contains(&d.recipe.name))
+        .cloned()
+        .collect();
+    let inventories = list_all(&involved, env, cache, true);
+    let refs: Vec<&Inventory> = inventories.iter().collect();
+    let manifest = manifest::Manifest::from_inventories(name, &refs)
+        .map_err(|e| Failure::Message(format!("{e}, so pmm can't save a list of them; not removing {name}")))?;
+
+    let how = if detections.iter().any(|d| d.recipe.name == plan.method) {
+        format!("via {}", plan.method)
+    } else {
+        format!("with its {} installer", plan.method)
+    };
+    heading(&format!("Removing {name} (installed {how})\n"));
+    let mut inventories = inventories;
+    inventories.sort_by_key(|i| i.manager != name);
+    let width = inventories.iter().map(|i| i.manager.len()).max().unwrap_or(0);
+    for inv in &inventories {
+        let packages = inv.packages.as_ref().map(Vec::as_slice).unwrap_or_default();
+        // nvm's are all "node"; tell them apart by version.
+        let same_names = packages.iter().enumerate().any(|(i, p)| packages[..i].iter().any(|q| q.name == p.name));
+        let labels: Vec<String> = packages
+            .iter()
+            .map(|p| match (&p.version, same_names) {
+                (Some(v), true) => format!("{} {v}", p.name),
+                _ => p.name.clone(),
+            })
+            .collect();
+        let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let what = if names.is_empty() {
+            format!("no {}", inv.items)
+        } else {
+            format!("{}: {}", count(names.len(), &inv.items), some_names(&names, false))
+        };
+        let manager = format!("{:<width$}", inv.manager);
+        println!("  {}  {what}", manager.if_supports_color(Stdout, |m| m.cyan()));
+    }
+    if !plan.dependents.is_empty() {
+        let line = format!(
+            "\n⚠ {} {} installed via {name} and will stop working.",
+            plan.dependents.join(", "),
+            if plan.dependents.len() == 1 { "was" } else { "were" }
+        );
+        println!("{}", line.if_supports_color(Stdout, |l| l.yellow()));
+    }
+    if !plan.steps.is_empty() {
+        println!("\nRuns");
+        for step in &plan.steps {
+            println!("  {}", step.shown(ELEVATE));
+        }
+    }
+    if !plan.paths.is_empty() {
+        println!("\nThen deletes");
+        for path in &plan.paths {
+            println!("  {}", tilde(path, env));
+        }
+    }
+    if let Some(note) = &plan.note {
+        println!("\nAfterwards: {note}");
+    }
+    if !manifest.packages.is_empty() {
+        println!("\nThe list above is saved first, so `pmm restore` can reinstall it.");
+    }
+    if dry_run {
+        println!("\nDry run: nothing was changed.");
+        return Ok(());
+    }
+    if !yes {
+        confirm(&format!("Remove {name} and everything listed?"))?;
+    }
+
+    let saved = match manifest.packages.is_empty() {
+        true => None,
+        false => {
+            let dir = manifest::default_dir().ok_or_else(|| Failure::Message("no home folder to save the list in".into()))?;
+            let path = manifest::save(&dir, &manifest)
+                .map_err(|e| Failure::Message(format!("{e:#}; not removing {name}")))?;
+            println!("Saved the list to {}", tilde(&path, env));
+            Some(path)
+        }
+    };
+    let restore_hint = match &saved {
+        Some(path) => format!(" The package list is in {}.", tilde(path, env)),
+        None => String::new(),
+    };
+    if plan.steps.iter().any(|s| s.sudo) && !get_sudo(&[name]) {
+        return Err(Failure::Message("sudo wasn't given; nothing was removed".into()));
+    }
+    if let Err(f) = run_in_terminal(&plan.steps) {
+        return Err(Failure::Message(format!(
+            "`{}` {}; {name} may be partly removed.{restore_hint}",
+            f.step.shown(ELEVATE),
+            f.reason
+        )));
+    }
+    let mut leftovers = Vec::new();
+    for path in &plan.paths {
+        match manage::delete_path(path) {
+            Ok(()) => println!("Deleted {}", tilde(path, env)),
+            Err(e) => leftovers.push(format!("{}: {e}", tilde(path, env))),
+        }
+    }
+
+    println!();
+    println!("{}", format!("✓ Removed {name}").if_supports_color(Stdout, |l| l.green()));
+    if let Some(path) = &saved {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        println!("  Bring its packages back with `pmm restore {stem}`.");
+    }
+    if let Some(note) = &plan.note {
+        println!("  {note}");
+    }
+    if !leftovers.is_empty() {
+        return Err(Failure::Message(format!("couldn't delete {}", leftovers.join("; "))));
+    }
+    Ok(())
+}
+
+fn saved_lists(env: &Env) {
+    let saved = manifest::default_dir().map(|d| manifest::saved(&d)).unwrap_or_default();
+    if saved.is_empty() {
+        println!("No saved package lists. pmm saves one whenever it removes a manager.");
+        return;
+    }
+    heading("Saved package lists (newest first)\n");
+    let names: Vec<String> = saved
+        .iter()
+        .map(|(p, _)| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+        .collect();
+    let width = names.iter().map(String::len).max().unwrap_or(0);
+    for (name, (_, m)) in names.iter().zip(&saved) {
+        println!("  {name:<width$}  {}", count(m.packages.len(), "packages"));
+    }
+    if let Some(dir) = manifest::default_dir() {
+        let line = format!("\nIn {}. `pmm restore <name>` reinstalls one.", tilde(&dir, env));
+        println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+    }
+}
+
+fn restore(
+    list: &str,
+    via: Option<&str>,
+    dry_run: bool,
+    detections: &[Detection],
+    env: &Env,
+    cache: &Cache,
+) -> Result<(), Failure> {
+    let dir = manifest::default_dir();
+    let path = manifest::resolve(list, dir.as_deref());
+    let manifest = manifest::load(&path).map_err(|e| Failure::Message(format!("{e:#}")))?;
+    let inventories = list_all(detections, env, cache, false);
+    let items = manage::plan_restore(&manifest, via, detections, &inventories);
+
+    heading(&format!(
+        "Restoring {} removed with {} on {}\n",
+        count(items.len(), "packages"),
+        manifest.manager,
+        manifest.date
+    ));
+    let to_install: Vec<(&manage::RestoreItem, &Step)> = items
+        .iter()
+        .filter_map(|i| match &i.restore {
+            Restore::Install(step) => Some((i, step)),
+            _ => None,
+        })
+        .collect();
+    if to_install.is_empty() {
+        println!("  Nothing to install.");
+    }
+    for (_, step) in &to_install {
+        println!("  {}", step.shown(ELEVATE));
+    }
+    let already: Vec<&str> = items
+        .iter()
+        .filter(|i| i.restore == Restore::AlreadyInstalled)
+        .map(|i| i.package.as_str())
+        .collect();
+    if !already.is_empty() {
+        let line = format!("\nAlready installed: {}", some_names(&already, false));
+        println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+    }
+    let cannot: Vec<(&manage::RestoreItem, &String)> = items
+        .iter()
+        .filter_map(|i| match &i.restore {
+            Restore::Cannot(why) => Some((i, why)),
+            _ => None,
+        })
+        .collect();
+    if !cannot.is_empty() {
+        println!("\n{}", "Can't restore".if_supports_color(Stdout, |l| l.yellow()));
+        // Usually one reason for all of them ("pip can't install packages").
+        for (why, names) in group_by(cannot.iter().map(|(i, why)| (*why, i.package.as_str()))) {
+            println!("  {}: {why}", some_names(&names, false));
+        }
+        if via.is_none() {
+            println!("  Try `--via <manager>` to install them with another manager.");
+        }
+    }
+    if dry_run || to_install.is_empty() {
+        if dry_run {
+            println!("\nDry run: nothing was changed.");
+        }
+        return Ok(());
+    }
+    let sudo: Vec<&str> = to_install
+        .iter()
+        .filter(|(_, s)| s.sudo)
+        .map(|(i, _)| i.manager.as_str())
+        .fold(Vec::new(), |mut v, m| {
+            if !v.contains(&m) {
+                v.push(m);
+            }
+            v
+        });
+    let have_sudo = get_sudo(&sudo);
+
+    let mut failed = Vec::new();
+    for (n, (item, step)) in to_install.iter().enumerate() {
+        section(&format!("{} ({}/{})", item.package, n + 1, to_install.len()));
+        if step.sudo && !have_sudo {
+            println!("skipped: sudo wasn't given");
+            failed.push(item.package.as_str());
+            continue;
+        }
+        if let Err(f) = run_in_terminal(std::slice::from_ref(*step)) {
+            println!("{}", format!("✗ {}", f.reason).if_supports_color(Stdout, |l| l.red()));
+            failed.push(item.package.as_str());
+        }
+    }
+    println!();
+    let done = to_install.len() - failed.len();
+    println!("{}", format!("✓ Restored {}", count(done, "packages")).if_supports_color(Stdout, |l| l.green()));
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::Message(format!("couldn't restore {}", failed.join(", "))))
     }
 }

@@ -18,3 +18,22 @@ glob = ["~/go/bin/{package}"]
 # go has no "upgrade all": reinstall each binary in ~/go/bin from the package
 # path recorded inside it.
 commands = [["sh", "-c", "for b in \"$HOME\"/go/bin/*; do p=$(go version -m \"$b\" 2>/dev/null | awk '$1 == \"path\" { print $2; exit }'); [ -n \"$p\" ] && go install \"$p@latest\"; done; true"]]
+
+[[install]]
+name = "brew"
+manager = "brew"
+commands = [["brew", "install", "go"]]
+uninstall = [["brew", "uninstall", "go"]]
+
+[[install]]
+name = "apt"
+manager = "apt"
+commands = [["apt-get", "install", "-y", "golang-go"]]
+sudo = true
+uninstall = [["apt-get", "remove", "golang-go"]]
+
+[remove]
+# The module cache is read-only on disk, so go has to clear it itself.
+# ~/go/src (your own code, if any) is left alone.
+commands = [["go", "clean", "-modcache"]]
+paths = ["~/go/bin"]

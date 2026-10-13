@@ -15,3 +15,16 @@ watch = ["~/.nvm/versions/node"]
 
 # No [update]: a newer Node is a new install alongside the old ones
 # (`nvm install --lts --reinstall-packages-from=current`), not an update.
+
+[[install]]
+name = "official"
+commands = [["bash", "-c", "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash"]]
+# Everything (every Node version and its global packages) lives in ~/.nvm.
+uninstall = []
+
+[remove]
+paths = ["~/.nvm"]
+note = "Delete the NVM_DIR lines the installer added to ~/.bashrc."
+
+[install_pkg]
+command = ["bash", "-c", ". \"$HOME/.nvm/nvm.sh\" && nvm install {version}"]
