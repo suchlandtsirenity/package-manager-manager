@@ -5,7 +5,8 @@ homepage = "https://github.com/nvm-sh/nvm"
 [detect]
 path = "~/.nvm/nvm.sh"
 version = ["bash", "-c", "source ~/.nvm/nvm.sh && nvm --version"]
-owns = ["~/.nvm"]
+# npm and corepack come bundled with each Node version.
+owns = ["~/.nvm", "~/.nvm/versions/node/*/lib/node_modules/npm", "~/.nvm/versions/node/*/lib/node_modules/corepack"]
 
 [list]
 builtin = "nvm"

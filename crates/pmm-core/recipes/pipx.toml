@@ -11,3 +11,6 @@ owns = ["~/.local/share/pipx"]
 command = ["pipx", "list", "--short"]
 pattern = '^(?P<name>\S+) (?P<version>\S+)'
 watch = ["~/.local/share/pipx/venvs", "~/.local/share/pipx/venvs/*/pipx_metadata.json"]
+
+[binaries]
+builtin = "pipx-apps"

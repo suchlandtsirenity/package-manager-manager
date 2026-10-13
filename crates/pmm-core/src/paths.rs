@@ -70,10 +70,13 @@ impl Env {
 
 /// First executable called `name` in `dirs`, like `which`.
 pub fn find_in_path(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    dirs.iter().map(|d| d.join(name)).find(|p| {
-        p.metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
+    dirs.iter().map(|d| d.join(name)).find(|p| is_executable(p))
+}
+
+/// A file (after following links) with an execute bit set.
+pub fn is_executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// If `pattern` is a folder containing `path` (or is `path`), how many path

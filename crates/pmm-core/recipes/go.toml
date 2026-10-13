@@ -10,3 +10,6 @@ owns = ["~/go/bin"]
 [list]
 builtin = "go-bins"
 watch = ["~/go/bin"]
+
+[binaries]
+glob = ["~/go/bin/{package}"]

@@ -5,7 +5,9 @@ homepage = "https://rustup.rs"
 [detect]
 binary = "rustup"
 version = ["rustup", "--version"]
-owns = ["~/.cargo/bin", "~/.rustup"]
+# Its own binary is listed so it beats cargo's ~/.cargo/bin; rustc, cargo
+# etc. in ~/.cargo/bin are links to it.
+owns = ["~/.cargo/bin/rustup", "~/.rustup"]
 
 [list]
 command = ["rustup", "toolchain", "list"]

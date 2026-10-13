@@ -25,6 +25,10 @@ pub struct Recipe {
     /// How to list installed packages. Missing means pmm can't list them.
     #[serde(default)]
     pub list: Option<List>,
+    /// How to find the commands a package provides. Missing means pmm can't
+    /// tell which copy of a duplicated package runs.
+    #[serde(default)]
+    pub binaries: Option<Binaries>,
     /// Where this recipe came from. Filled in by the loader.
     #[serde(skip)]
     pub source: Source,
@@ -58,7 +62,8 @@ pub struct List {
     #[serde(default)]
     pub command: Option<Vec<String>>,
     /// Regex applied to each output line. Named groups: `name` (required),
-    /// `version`, `title` (searchable display name) and `note` (optional). Lines that don't match are skipped.
+    /// `version`, `title` (searchable display name) and `note` (optional).
+    /// Lines that don't match are skipped.
     #[serde(default)]
     pub pattern: Option<String>,
     /// Name of a reader built into pmm, for managers a pattern can't handle.
@@ -71,6 +76,23 @@ pub struct List {
     /// The cached list is reused until one of them changes. `~` and `*` work.
     #[serde(default)]
     pub watch: Vec<String>,
+}
+
+/// How to find the commands one package provides. `{package}` in `glob` or
+/// `command` is replaced by the package name. Use one of: `glob` (files whose
+/// names are the commands), `command` + `pattern` (a `name` group, or a
+/// `path` group whose file name is used), or `builtin`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Binaries {
+    #[serde(default)]
+    pub glob: Vec<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub builtin: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -106,7 +128,35 @@ pub fn parse(text: &str) -> Result<Recipe> {
     if let Some(list) = &recipe.list {
         check_list(list)?;
     }
+    if let Some(binaries) = &recipe.binaries {
+        check_binaries(binaries)?;
+    }
     Ok(recipe)
+}
+
+fn check_binaries(b: &Binaries) -> Result<()> {
+    match (b.glob.is_empty(), &b.command, &b.pattern, &b.builtin) {
+        (false, None, None, None) => {}
+        (true, Some(command), Some(pattern), None) => {
+            if command.is_empty() {
+                bail!("[binaries] command is empty");
+            }
+            let re = Regex::new(pattern).context("[binaries] pattern isn't a valid regex")?;
+            if !re.capture_names().flatten().any(|n| n == "name" || n == "path") {
+                bail!("[binaries] pattern needs a (?P<name>...) or (?P<path>...) group");
+            }
+        }
+        (true, None, None, Some(name)) => {
+            if !crate::binaries::BUILTINS.contains(&name.as_str()) {
+                bail!(
+                    "[binaries] builtin {name:?} doesn't exist (known: {})",
+                    crate::binaries::BUILTINS.join(", ")
+                );
+            }
+        }
+        _ => bail!("[binaries] needs exactly one of `glob`, `command` and `pattern`, or `builtin`"),
+    }
+    Ok(())
 }
 
 fn check_list(list: &List) -> Result<()> {

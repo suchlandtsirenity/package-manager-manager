@@ -5,9 +5,13 @@ homepage = "https://doc.rust-lang.org/cargo"
 [detect]
 binary = "cargo"
 version = ["cargo", "--version"]
+owns = ["~/.cargo/bin"]
 
 [list]
 command = ["cargo", "install", "--list"]
 # "ripgrep v14.1.0:" or "foo v0.1.0 (/path/to/src):"; indented lines are its binaries.
 pattern = '^(?P<name>\S+) v(?P<version>[^\s:]+)(?: \((?P<note>[^)]*)\))?:?$'
 watch = ["~/.cargo/.crates2.json", "~/.cargo/.crates.toml"]
+
+[binaries]
+builtin = "cargo-bins"

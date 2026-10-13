@@ -49,7 +49,7 @@ A recipe declares:
 | `remove` | command(s) to uninstall the manager itself, plus paths it leaves behind |
 | `requires` | other managers it depends on (e.g. pnpm → npm, go via brew) |
 | `protected` | if true, pmm refuses to remove it (apt, dpkg) |
-| `binaries_of` | how to map a package to the binaries it installs (for dupes / PATH) |
+| `binaries` | the commands a package provides (`glob`, `command` + `pattern`, or `builtin`), for showing which copy of a duplicate runs |
 | `search_remote` | search the manager's repository/registry for packages not installed |
 | `info` | details for one package (description, version, homepage) |
 | `install_pkg`, `remove_pkg`, `upgrade_pkg` | per-package actions, with `needs_sudo` |
@@ -86,8 +86,16 @@ built-in parser written in Rust.
   repository results streamed in per manager as each one answers, marking what's
   already installed. `--installed` stops after the local part; `--remote` skips it.
   Until per-package management lands (build step 6), only the installed part exists.
-- `pmm dupes` — the same tool installed via more than one manager, and which copy
-  is first in PATH.
+- `pmm dupes [--all]` — two lists:
+  - the same package under more than one manager (names compared
+    case-insensitively, `-`/`_`/`.` equal, app part of flatpak ids), with which
+    manager's copy each of its commands runs from;
+  - the same command in more than one PATH folder, credited to the manager that
+    put each copy there, grouped as "brew hides apt: 55 commands" (`--all` lists
+    each command and path).
+  Copies are credited by the deepest `owns` folder of the file they resolve to,
+  a link to a manager's own binary (snap apps), or pip's `RECORD` files (for
+  scripts in `~/.local/bin`); otherwise "no manager (folder)".
 - `pmm status` — managers detected, package totals, duplicate count, last updated.
 
 ### Updating
@@ -127,8 +135,8 @@ Same features as the CLI, laid out for browsing:
 - **nvm**: npm/pnpm globals are read for every installed Node version, not just the
   active one.
 - **Active in PATH** is decided by binary name, not package name (`ripgrep` → `rg`).
-- **Last updated** comes from whatever the manager leaves behind (apt history log,
-  file times); "unknown" when there's nothing.
+- **Last change** (in `status`) is the newest modification time among a recipe's
+  `watch` paths: the last install, removal or upgrade. "unknown" when none exist.
 - **Cache**: each manager's list is cached in `~/.cache/pmm/list/`. A recipe's
   `watch` paths (e.g. `/var/lib/dpkg/status`) are fingerprinted by modification
   time; the cache is reused until one changes, for at most 24h (10 min for

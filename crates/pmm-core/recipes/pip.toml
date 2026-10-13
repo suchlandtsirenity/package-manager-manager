@@ -8,8 +8,13 @@ version = ["pip", "--version"]
 owns = ["~/.local/lib/python*/site-packages"]
 
 [list]
-# User installs, plus anything forced into /usr/local with --break-system-packages.
-# Packages apt put in /usr/lib/python3 belong to apt and are left out.
-command = ["sh", "-c", "pip list --user --format=freeze 2>/dev/null; for d in /usr/local/lib/python3*/dist-packages; do [ -d \"$d\" ] && pip list --path \"$d\" --format=freeze 2>/dev/null; done; true"]
-pattern = '^(?P<name>[^=\s]+)==(?P<version>\S+)$'
+# User installs and anything forced into /usr/local with --break-system-packages,
+# for every Python version, not just the current one (an OS upgrade leaves the
+# old version's packages behind). Each line gets its folder appended so the
+# Python version can be shown. Packages apt put in /usr/lib/python3 are apt's.
+command = ["sh", "-c", "for d in \"$HOME\"/.local/lib/python3*/site-packages /usr/local/lib/python3*/dist-packages; do [ -d \"$d\" ] && pip list --path \"$d\" --format=freeze 2>/dev/null | sed \"s|\\$| $d|\"; done; true"]
+pattern = '^(?P<name>[^=\s]+)==(?P<version>\S+)(?: .*/(?P<note>python[\d.]+)/)?'
 watch = ["~/.local/lib/python*/site-packages", "/usr/local/lib/python*/dist-packages"]
+
+[binaries]
+builtin = "pip-scripts"

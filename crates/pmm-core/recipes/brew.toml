@@ -11,3 +11,6 @@ owns = ["/home/linuxbrew/.linuxbrew", "~/.linuxbrew"]
 command = ["brew", "list", "--versions"]
 pattern = '^(?P<name>\S+) (?P<version>\S+)'
 watch = ["/home/linuxbrew/.linuxbrew/Cellar", "/home/linuxbrew/.linuxbrew/Cellar/*", "/home/linuxbrew/.linuxbrew/Caskroom"]
+
+[binaries]
+glob = ["/home/linuxbrew/.linuxbrew/Cellar/{package}/*/bin/*", "/home/linuxbrew/.linuxbrew/Cellar/{package}/*/sbin/*"]

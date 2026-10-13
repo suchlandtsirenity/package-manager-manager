@@ -6,10 +6,15 @@ protected = true
 [detect]
 binary = "apt"
 version = ["apt", "--version"]
-owns = ["/usr", "/bin", "/sbin", "/lib"]
+# Not /usr/local: that's for things installed by hand (or by pip).
+owns = ["/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec", "/usr/share", "/usr/games", "/bin", "/sbin", "/lib", "/lib64"]
 
 [list]
 command = ["dpkg-query", "-W", "-f", "${db:Status-Abbrev}\t${Package}\t${Version}\n"]
 # "ii" = installed, "hi" = installed and held; "rc" (removed, config left) is skipped.
 pattern = '^[ih]i\s*\t(?P<name>[^\t]+)\t(?P<version>.*)$'
 watch = ["/var/lib/dpkg/status"]
+
+[binaries]
+command = ["dpkg", "-L", "{package}"]
+pattern = '^/(?:usr/)?(?:s?bin|games)/(?P<name>[^/]+)$'

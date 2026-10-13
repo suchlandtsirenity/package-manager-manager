@@ -124,6 +124,14 @@ impl Cache {
     }
 }
 
+/// The newest modification time among the watched paths: roughly when the
+/// manager last installed, removed or upgraded something. None if no watched
+/// path exists.
+pub fn last_change(fingerprint: &Fingerprint) -> Option<SystemTime> {
+    let nanos = fingerprint.iter().filter_map(|(_, mtime)| *mtime).max()?;
+    Some(UNIX_EPOCH + Duration::from_nanos(u64::try_from(nanos).ok()?))
+}
+
 fn list_key(list: &List) -> String {
     serde_json::to_string(list).unwrap_or_default()
 }

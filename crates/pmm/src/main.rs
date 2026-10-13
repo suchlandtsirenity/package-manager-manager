@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::ExitCode;
+use std::time::SystemTime;
 
 use clap::{Parser, Subcommand};
 use owo_colors::{OwoColorize, Stream::Stdout};
 use pmm_core::{
-    Cache, Detection, Env, Inventory, Rank, Source, Status, Via, detect_all, list_all, recipe,
-    search,
+    Cache, Detection, Env, Inventory, Owners, Rank, Source, Status, Via, cache, detect_all,
+    list_all, package_dupes, recipe, search, shadowed_commands, which_runs,
 };
 
 /// pmm — the package manager manager.
@@ -35,6 +37,21 @@ enum Cmd {
         /// Only search this manager.
         #[arg(short, long)]
         manager: Option<String>,
+        /// Re-read from the managers instead of using the cache.
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Find things installed more than once, and which copy actually runs.
+    Dupes {
+        /// List every command instead of grouping them.
+        #[arg(short, long)]
+        all: bool,
+        /// Re-read from the managers instead of using the cache.
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Overview: managers, package count, duplicates, last changes.
+    Status {
         /// Re-read from the managers instead of using the cache.
         #[arg(long)]
         refresh: bool,
@@ -79,6 +96,18 @@ fn main() -> ExitCode {
                 let inventories = list_all(&d, &env, &cache, refresh);
                 search_installed(&inventories, &query)
             })
+        }
+        Cmd::Dupes { all, refresh } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            let inventories = list_all(&detections, &env, &cache, refresh);
+            dupes(&detections, &inventories, &env, all);
+            Ok(())
+        }
+        Cmd::Status { refresh } => {
+            let detections = detect_all(&loaded.recipes, &env, false);
+            let inventories = list_all(&detections, &env, &cache, refresh);
+            status(&detections, &inventories, &env, &cache);
+            Ok(())
         }
     };
     match result {
@@ -276,4 +305,218 @@ fn search_installed(inventories: &[Inventory], query: &str) -> Result<(), Failur
         );
     }
     Ok(())
+}
+
+/// A path with the home folder shown as `~`.
+fn tilde(path: &Path, env: &Env) -> String {
+    match env.home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+fn owner_label(owner: &Option<String>) -> &str {
+    owner.as_deref().unwrap_or("no manager")
+}
+
+fn heading(text: &str) {
+    println!("{}", text.if_supports_color(Stdout, |t| t.bold()));
+}
+
+/// Who owns a copy, with the folder for files no manager owns, since that's
+/// the only clue to where they came from.
+fn copy_label(copy: &pmm_core::dupes::Copy, env: &Env) -> String {
+    match &copy.owner {
+        Some(manager) => manager.clone(),
+        None => match copy.location.parent() {
+            Some(dir) => format!("no manager ({})", tilde(dir, env)),
+            None => "no manager".into(),
+        },
+    }
+}
+
+/// "a, b, c, d, +5 more" — or every name with `all`.
+fn some_names(names: &[&str], all: bool) -> String {
+    const SHOWN: usize = 4;
+    if all || names.len() <= SHOWN + 1 {
+        names.join(", ")
+    } else {
+        format!("{}, +{} more", names[..SHOWN].join(", "), names.len() - SHOWN)
+    }
+}
+
+/// Group items by a key, keeping first-seen order of keys and items.
+fn group_by<K: PartialEq, V>(items: impl IntoIterator<Item = (K, V)>) -> Vec<(K, Vec<V>)> {
+    let mut groups: Vec<(K, Vec<V>)> = Vec::new();
+    for (key, value) in items {
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, values)) => values.push(value),
+            None => groups.push((key, vec![value])),
+        }
+    }
+    groups
+}
+
+fn dupes(detections: &[Detection], inventories: &[Inventory], env: &Env, all: bool) {
+    let owners = Owners::new(detections, env);
+    let packages = package_dupes(inventories);
+    let shadowed = shadowed_commands(env, &owners);
+    if packages.is_empty() && shadowed.is_empty() {
+        println!("No duplicates found.");
+        return;
+    }
+
+    if !packages.is_empty() {
+        heading("Same package from more than one manager\n");
+        let width = packages.iter().map(|d| d.copies[0].1.name.len()).max().unwrap_or(0);
+        for dupe in &packages {
+            let copies: Vec<String> = dupe
+                .copies
+                .iter()
+                .map(|(m, p)| format!("{m} {}", p.version.as_deref().unwrap_or("")).trim_end().to_string())
+                .collect();
+            println!("  {:<width$}  {}", dupe.copies[0].1.name, copies.join(" · "));
+
+            // "runs brew's: bash, bashbug · apt's: rbash"
+            let commands = which_runs(dupe, detections, &owners, env);
+            let by_owner = group_by(commands.iter().map(|c| {
+                let owner = match &c.runs {
+                    Some(copy) => format!("{}'s", copy_label(copy, env)),
+                    None => "nothing (not on PATH)".to_string(),
+                };
+                (owner, c.name.as_str())
+            }));
+            if !by_owner.is_empty() {
+                let parts: Vec<String> = by_owner
+                    .iter()
+                    .map(|(owner, names)| format!("{owner}: {}", some_names(names, all)))
+                    .collect();
+                let line = format!("runs {}", parts.join(" · "));
+                println!("  {:<width$}  {}", "", line.if_supports_color(Stdout, |d| d.dimmed()));
+            }
+        }
+    }
+
+    if !shadowed.is_empty() {
+        if !packages.is_empty() {
+            println!();
+        }
+        heading("Same command in more than one place on PATH (the first one runs)\n");
+        if !all {
+            // One line per "X hides Y" combination instead of per command.
+            let groups = group_by(shadowed.iter().map(|s| {
+                let labels: Vec<String> = s.copies.iter().map(|c| copy_label(c, env)).collect();
+                (labels, s.name.as_str())
+            }));
+            let rows: Vec<(String, &Vec<&str>)> = groups
+                .iter()
+                .map(|(labels, names)| (format!("{} hides {}", labels[0], labels[1..].join(", ")), names))
+                .collect();
+            let width = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+            for (label, names) in &rows {
+                let n = count(names.len(), "commands");
+                println!(
+                    "  {label:<width$}  {n:<12}  {}",
+                    some_names(names, false).if_supports_color(Stdout, |d| d.dimmed())
+                );
+            }
+            println!(
+                "\n{}",
+                "`pmm dupes --all` lists every command and path.".if_supports_color(Stdout, |d| d.dimmed())
+            );
+            return;
+        }
+        let width = shadowed.iter().map(|s| s.name.len()).max().unwrap_or(0);
+        let owner_width = shadowed
+            .iter()
+            .flat_map(|s| &s.copies)
+            .map(|c| owner_label(&c.owner).len())
+            .max()
+            .unwrap_or(0);
+        for s in &shadowed {
+            for (i, copy) in s.copies.iter().enumerate() {
+                let name = if i == 0 { s.name.as_str() } else { "" };
+                let line = format!(
+                    "  {name:<width$}  {:<owner_width$}  {}",
+                    owner_label(&copy.owner),
+                    tilde(&copy.location, env)
+                );
+                if i == 0 {
+                    println!("{line}");
+                } else {
+                    println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+                }
+            }
+        }
+    }
+}
+
+/// "just now", "5 min ago", "3 hours ago", "12 days ago".
+fn ago(when: SystemTime) -> String {
+    let secs = SystemTime::now().duration_since(when).map(|d| d.as_secs()).unwrap_or(0);
+    let plural = |n: u64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => format!("{} min ago", secs / 60),
+        3600..86400 => plural(secs / 3600, "hour"),
+        86400..31_536_000 => plural(secs / 86400, "day"),
+        _ => plural(secs / 31_536_000, "year"),
+    }
+}
+
+fn status(detections: &[Detection], inventories: &[Inventory], env: &Env, cache: &Cache) {
+    let installed = detections.iter().filter(|d| d.is_installed()).count();
+    let packages: usize = inventories
+        .iter()
+        .filter(|i| i.items == "packages")
+        .filter_map(|i| i.packages.as_ref().ok())
+        .map(Vec::len)
+        .sum();
+    let owners = Owners::new(detections, env);
+    let package_dupes = package_dupes(inventories).len();
+    let shadowed = shadowed_commands(env, &owners).len();
+
+    println!("Package managers  {installed} installed (of {} known)", detections.len());
+    println!("Packages          {packages}");
+    let dupes = if package_dupes + shadowed == 0 {
+        "none".to_string()
+    } else {
+        format!(
+            "{} in several managers · {} shadowed on PATH  (see `pmm dupes`)",
+            count(package_dupes, "packages"),
+            count(shadowed, "commands"),
+        )
+    };
+    println!("Duplicates        {dupes}");
+    let failed: Vec<&str> = inventories
+        .iter()
+        .filter(|i| i.packages.is_err())
+        .map(|i| i.manager.as_str())
+        .collect();
+    if !failed.is_empty() {
+        let line = format!("Couldn't read     {}", failed.join(", "));
+        println!("{}", line.if_supports_color(Stdout, |l| l.red()));
+    }
+
+    // Newest first; managers whose watched files don't exist go last.
+    let mut changes: Vec<(&str, Option<SystemTime>)> = detections
+        .iter()
+        .filter(|d| d.is_installed())
+        .filter_map(|d| {
+            let list = d.recipe.list.as_ref()?;
+            Some((d.recipe.name.as_str(), cache::last_change(&cache.fingerprint(list, env))))
+        })
+        .collect();
+    changes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    println!("\nLast change (install, removal or upgrade)");
+    let width = changes.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    for (name, when) in changes {
+        match when {
+            Some(t) => println!("  {name:<width$}  {}", ago(t)),
+            None => {
+                let line = format!("  {name:<width$}  unknown");
+                println!("{}", line.if_supports_color(Stdout, |l| l.dimmed()));
+            }
+        }
+    }
 }

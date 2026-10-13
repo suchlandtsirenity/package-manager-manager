@@ -198,7 +198,7 @@ fn rank(package: &Package, query: &str) -> Option<Rank> {
 /// The last part of a reverse-DNS app id like `org.mozilla.firefox`: three
 /// or more parts, starting with a letters-only domain. Keeps apt names like
 /// `gir1.2-gtk-3.0` out.
-fn reverse_dns_app(name: &str) -> Option<&str> {
+pub(crate) fn reverse_dns_app(name: &str) -> Option<&str> {
     let parts: Vec<&str> = name.split('.').collect();
     let looks_like_domain = parts[0].chars().all(|c| c.is_ascii_lowercase()) && !parts[0].is_empty();
     (parts.len() >= 3 && looks_like_domain).then(|| parts[parts.len() - 1])
@@ -283,8 +283,17 @@ mod tests {
     #[test]
     fn pip_and_rustup() {
         assert_eq!(
-            parse_lines("requests==2.31.0\n", &pattern_of("pip")),
-            vec![pkg("requests", Some("2.31.0"), None)]
+            parse_lines(
+                "requests==2.31.0 /home/u/.local/lib/python3.10/site-packages\n\
+                 pywal==3.3.0 /usr/local/lib/python3.12/dist-packages\n\
+                 bare==1.0\n",
+                &pattern_of("pip")
+            ),
+            vec![
+                pkg("requests", Some("2.31.0"), Some("python3.10")),
+                pkg("pywal", Some("3.3.0"), Some("python3.12")),
+                pkg("bare", Some("1.0"), None),
+            ]
         );
         assert_eq!(
             parse_lines("stable-x86_64-unknown-linux-gnu (active, default)\nnightly-x86_64-unknown-linux-gnu\n", &pattern_of("rustup")),

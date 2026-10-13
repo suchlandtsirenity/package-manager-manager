@@ -12,3 +12,6 @@ command = ["snap", "list"]
 # Name, Version, Rev (a number, which skips the header line)
 pattern = '^(?P<name>\S+)\s+(?P<version>\S+)\s+\d+\s'
 watch = ["/var/lib/snapd/state.json"]
+
+[binaries]
+glob = ["/snap/bin/{package}", "/snap/bin/{package}.*"]
