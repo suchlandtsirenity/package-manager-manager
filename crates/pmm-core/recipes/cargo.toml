@@ -1,0 +1,7 @@
+name = "cargo"
+description = "Rust packages (cargo install)"
+homepage = "https://doc.rust-lang.org/cargo"
+
+[detect]
+binary = "cargo"
+version = ["cargo", "--version"]

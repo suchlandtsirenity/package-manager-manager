@@ -1,0 +1,8 @@
+name = "nix"
+description = "Purely functional package manager"
+homepage = "https://nixos.org"
+
+[detect]
+binary = "nix"
+version = ["nix", "--version"]
+owns = ["/nix", "~/.nix-profile"]

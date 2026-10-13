@@ -1,0 +1,8 @@
+name = "uv"
+description = "Fast Python package and project manager"
+homepage = "https://docs.astral.sh/uv"
+
+[detect]
+binary = "uv"
+version = ["uv", "--version"]
+owns = ["~/.local/share/uv"]

@@ -1,0 +1,16 @@
+[package]
+name = "pmm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+wait-timeout = "0.2.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"

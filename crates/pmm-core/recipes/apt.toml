@@ -1,0 +1,9 @@
+name = "apt"
+description = "Debian/Ubuntu system packages"
+homepage = "https://wiki.debian.org/Apt"
+protected = true
+
+[detect]
+binary = "apt"
+version = ["apt", "--version"]
+owns = ["/usr", "/bin", "/sbin", "/lib"]

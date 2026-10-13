@@ -1,0 +1,8 @@
+name = "pnpm"
+description = "Fast, disk-efficient Node.js package manager"
+homepage = "https://pnpm.io"
+
+[detect]
+binary = "pnpm"
+version = ["pnpm", "--version"]
+owns = ["~/.local/share/pnpm"]

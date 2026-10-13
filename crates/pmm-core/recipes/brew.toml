@@ -1,0 +1,8 @@
+name = "brew"
+description = "Homebrew on Linux"
+homepage = "https://brew.sh"
+
+[detect]
+binary = "brew"
+version = ["brew", "--version"]
+owns = ["/home/linuxbrew/.linuxbrew", "~/.linuxbrew"]

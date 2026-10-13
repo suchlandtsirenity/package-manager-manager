@@ -1,0 +1,8 @@
+name = "rustup"
+description = "Rust toolchain installer"
+homepage = "https://rustup.rs"
+
+[detect]
+binary = "rustup"
+version = ["rustup", "--version"]
+owns = ["~/.cargo/bin", "~/.rustup"]

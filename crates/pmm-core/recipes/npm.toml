@@ -1,0 +1,8 @@
+name = "npm"
+description = "Node.js packages (global installs)"
+homepage = "https://www.npmjs.com"
+
+[detect]
+binary = "npm"
+version = ["npm", "--version"]
+owns = ["~/.nvm/versions/node/*/lib/node_modules", "/usr/lib/node_modules", "/usr/local/lib/node_modules"]

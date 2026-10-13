@@ -1,0 +1,8 @@
+name = "pipx"
+description = "Python CLI tools, each in its own venv"
+homepage = "https://pipx.pypa.io"
+
+[detect]
+binary = "pipx"
+version = ["pipx", "--version"]
+owns = ["~/.local/share/pipx"]

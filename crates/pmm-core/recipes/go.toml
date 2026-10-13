@@ -1,0 +1,8 @@
+name = "go"
+description = "Go tools (go install)"
+homepage = "https://go.dev"
+
+[detect]
+binary = "go"
+version = ["go", "version"]
+owns = ["~/go/bin"]

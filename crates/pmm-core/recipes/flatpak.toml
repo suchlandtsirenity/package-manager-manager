@@ -1,0 +1,8 @@
+name = "flatpak"
+description = "Sandboxed desktop apps"
+homepage = "https://flatpak.org"
+
+[detect]
+binary = "flatpak"
+version = ["flatpak", "--version"]
+owns = ["/var/lib/flatpak", "~/.local/share/flatpak"]

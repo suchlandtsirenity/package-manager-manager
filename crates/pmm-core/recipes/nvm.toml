@@ -1,0 +1,8 @@
+name = "nvm"
+description = "Node.js version manager"
+homepage = "https://github.com/nvm-sh/nvm"
+
+[detect]
+path = "~/.nvm/nvm.sh"
+version = ["bash", "-c", "source ~/.nvm/nvm.sh && nvm --version"]
+owns = ["~/.nvm"]

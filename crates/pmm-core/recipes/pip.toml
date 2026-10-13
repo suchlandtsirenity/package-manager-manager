@@ -1,0 +1,8 @@
+name = "pip"
+description = "Python's default installer (global/user installs)"
+homepage = "https://pip.pypa.io"
+
+[detect]
+binary = "pip"
+version = ["pip", "--version"]
+owns = ["~/.local/lib/python*/site-packages"]

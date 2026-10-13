@@ -1,0 +1,8 @@
+name = "snap"
+description = "Canonical's sandboxed packages"
+homepage = "https://snapcraft.io"
+
+[detect]
+binary = "snap"
+version = ["snap", "--version"]
+owns = ["/snap"]
