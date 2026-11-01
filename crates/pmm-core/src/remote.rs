@@ -228,6 +228,64 @@ mod tests {
         assert!(is_exact(&firefox[0], "Firefox"));
     }
 
+    /// Each built-in recipe's own pattern, against output captured from the
+    /// real command (trimmed). The tests above use hand-written patterns.
+    fn parsed(manager: &str, text: &str) -> Vec<(String, Option<String>, Option<String>)> {
+        let recipe = crate::recipe::built_in().into_iter().find(|r| r.name == manager).unwrap();
+        parse_found(text, recipe.search_remote.as_ref().unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.name, p.version, p.note))
+            .collect()
+    }
+
+    fn row(name: &str, version: Option<&str>, note: Option<&str>) -> (String, Option<String>, Option<String>) {
+        (name.into(), version.map(Into::into), note.map(Into::into))
+    }
+
+    #[test]
+    fn built_in_patterns_parse_real_output() {
+        let apt = "ripgrep - Recursively searches directories for a regex pattern\n";
+        assert_eq!(parsed("apt", apt), [row("ripgrep", None, Some("Recursively searches directories for a regex pattern"))]);
+
+        let cargo = "ripgrep = \"15.2.0\"       # ripgrep is a line-oriented search tool\n\
+                     maxgrep = \"0.0.0\"\n\
+                     ... and 790 crates more (use --limit N to see more)\n\
+                     note: to learn more about a package, run `cargo info <name>`\n";
+        assert_eq!(
+            parsed("cargo", cargo),
+            [row("ripgrep", Some("15.2.0"), Some("ripgrep is a line-oriented search tool")), row("maxgrep", Some("0.0.0"), None)]
+        );
+
+        let snap = "Name     Version                      Publisher  Notes    Summary\n\
+                    ripgrep  12.1.0                       icey       classic  Fast file searcher\n\
+                    yazi     v26.9.1-8dd895c6-2026-09-01  sxyazi     classic  Blazing fast terminal file manager\n";
+        assert_eq!(
+            parsed("snap", snap),
+            [
+                row("ripgrep", Some("12.1.0"), Some("Fast file searcher")),
+                row("yazi", Some("v26.9.1-8dd895c6-2026-09-01"), Some("Blazing fast terminal file manager")),
+            ]
+        );
+
+        // --parseable: name, description, date, version, keywords (often empty).
+        let npm = "ripgrep\tripgrep in a compact npm package.\t2026-04-06\t0.3.1\t\n\
+                   @vscode/ripgrep\tA module for using ripgrep in a Node project\t2026-05-07\t1.18.0\tripgrep search\n";
+        assert_eq!(
+            parsed("npm", npm),
+            [
+                row("ripgrep", Some("0.3.1"), Some("ripgrep in a compact npm package.")),
+                row("@vscode/ripgrep", Some("1.18.0"), Some("A module for using ripgrep in a Node project")),
+            ]
+        );
+
+        let flatpak = "org.mozilla.firefox\t159.0\tFirefox\tFast, Private & Safe Web Browser\n";
+        assert_eq!(parsed("flatpak", flatpak), [row("org.mozilla.firefox", Some("159.0"), Some("Fast, Private & Safe Web Browser"))]);
+
+        let brew = "==> Formulae\nripgrep\nripgrep-all\n\n==> Casks\nripme\n";
+        assert_eq!(parsed("brew", brew), [row("ripgrep", None, None), row("ripgrep-all", None, None), row("ripme", None, None)]);
+    }
+
     #[test]
     fn refuses_odd_queries() {
         let err = search_remote(&[], &[], "a; rm", |_| {}).unwrap_err();
