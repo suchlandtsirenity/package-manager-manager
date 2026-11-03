@@ -25,7 +25,7 @@ Same command in more than one place on PATH (the first one runs)
   pip hides apt                                              5 commands    f2py, keyring, markdown-it, markdown_py, pygmentize
 ```
 
-<!-- TODO: screenshot of pmm-gui's Installed view -->
+![pmm-gui: every installed package across 14 managers in one sortable table](docs/screenshot.png)
 
 ## What it does
 
@@ -102,7 +102,7 @@ Linux only for now, Debian/Ubuntu first (developed on Pop!_OS 24.04). Needs
 Rust 1.85+.
 
 ```sh
-cargo install --git https://github.com/suchlandtsirenity/pmm pmm
+cargo install --git https://github.com/suchlandtsirenity/package-manager-manager pmm
 ```
 
 Or from a clone:
