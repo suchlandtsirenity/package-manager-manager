@@ -130,6 +130,18 @@ Package lists are cached and reused until a file the manager writes to (like
 The full design, including every command's exact behaviour, is in
 [SPEC.md](SPEC.md).
 
+### How this was built
+
+pmm was built AI-first with Claude Code, in one session, following the build
+order in the spec: each step was built, tested against the real machine (or
+fake managers in a sandbox, for anything that installs or removes), committed,
+and only then the next one started. Anything that changes the system was
+dry-run first, and the GUI was refined from screenshots of each build.
+
+The [build session log](docs/build-session.md) is the transcript of that
+session: every request, design decision and fix, from the first draft spec to
+the Updates page.
+
 ```sh
 cargo test     # pmm-core and the CLI (the GUI is skipped by default)
 ```
